@@ -287,6 +287,7 @@ class _BlogListPageState extends State<BlogListPage> {
         final blog = allBlogs[index];
         return BlogCard(
           blog: blog,
+          currentUserId: userId,
           onTap: () => Navigator.of(context)
               .push(MaterialPageRoute(builder: (_) => BlogDetailPage(blog: blog))),
           onLike: () => toggleLike(blog),

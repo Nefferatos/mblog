@@ -4,7 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-
+import 'update_blog_page.dart';
 import '../services/supabase_service.dart';
 import '../services/storage_service.dart';
 import '../services/auth_service.dart';
@@ -28,7 +28,6 @@ class _ProfilePageState extends State<ProfilePage> {
   String? currentUserId;
   String? userEmail;
   
-  // These represent the profile being viewed
   String? profileAvatarUrl;
   String profileUsername = "Loading...";
 
@@ -63,7 +62,6 @@ Future<void> loadProfileHeader() async {
     setState(() => loading = true);
     
     try {
-      // 1. Always try to fetch from a dedicated 'profiles' table first
       final profileData = await Supabase.instance.client
           .from('profiles')
           .select()
@@ -74,7 +72,6 @@ Future<void> loadProfileHeader() async {
         profileUsername = profileData['username'] ?? "Anonymous";
         profileAvatarUrl = profileData['avatar_url'];
       } else if (isCurrentUser) {
-        // 2. Fallback for the Logged-in user (using Auth metadata)
         profileUsername = auth.displayName;
         final avatarPath = auth.currentUser?.userMetadata?['avatar'] as String?;
         if (avatarPath != null) {
@@ -82,7 +79,6 @@ Future<void> loadProfileHeader() async {
               .from('blog-images').getPublicUrl(avatarPath);
         }
       } else {
-        // 3. Last resort fallback for others
         profileUsername = "New User";
       }
     } catch (e) {
@@ -101,7 +97,7 @@ Future<void> loadProfileHeader() async {
       final data = await Supabase.instance.client
           .from('blogs')
           .select('*, likes(*)')
-          .eq('user_id', widget.userId) // Correctly filters by the profile owner
+          .eq('user_id', widget.userId)
           .order('created_at', ascending: isAscending)
           .range(from, to);
 
@@ -204,7 +200,21 @@ Future<void> loadProfileHeader() async {
                     blog: blog,
                     currentUserId: currentUserId,
                     onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => BlogDetailPage(blog: blog))),
-                    onEdit: isCurrentUser ? () => _showEditBlogSheet(blog) : null,
+                    onEdit: isCurrentUser
+    ? () async {
+        final updated = await Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => UpdateBlogPage(blog: blog),
+          ),
+        );
+
+        if (updated == true) {
+          fetchUserBlogs();
+        }
+      }
+    : null,
+
                     onDelete: isCurrentUser ? () => _handleDelete(blog) : null,
                     onLike: () => _toggleLike(blog),
                     onComment: () => Navigator.push(context, MaterialPageRoute(builder: (_) => BlogDetailPage(blog: blog))),
@@ -425,35 +435,5 @@ Future<void> loadProfileHeader() async {
     } finally {
       setState(() => loading = false);
     }
-  }
-
-  void _showEditBlogSheet(Blog blog) {
-    final titleController = TextEditingController(text: blog.title);
-    final contentController = TextEditingController(text: blog.content);
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      builder: (context) => Padding(
-        padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom, left: 24, right: 24, top: 24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(controller: titleController, decoration: const InputDecoration(labelText: "Title")),
-            TextField(controller: contentController, maxLines: 3, decoration: const InputDecoration(labelText: "Content")),
-            const SizedBox(height: 20),
-            ElevatedButton(
-              onPressed: () async {
-                Navigator.pop(context);
-                final success = await service.updateBlog(blog.id, title: titleController.text, content: contentController.text);
-                if (success) fetchUserBlogs();
-              },
-              style: ElevatedButton.styleFrom(backgroundColor: colorBlack, foregroundColor: Colors.white),
-              child: const Text("Update"),
-            ),
-            const SizedBox(height: 20),
-          ],
-        ),
-      ),
-    );
   }
 }

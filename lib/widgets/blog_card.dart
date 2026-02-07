@@ -162,6 +162,7 @@ class BlogCard extends StatelessWidget {
                   onTap: onTap,
                   child: Image.network(
                     blog.imageUrl!,
+                    key: ValueKey(blog.imageUrl),
                     width: double.infinity,
                     height: 200,
                     fit: BoxFit.cover,
