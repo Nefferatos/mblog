@@ -61,14 +61,40 @@ void dispose() {
 @override
 void didChangeAppLifecycleState(AppLifecycleState state) {
   if (state == AppLifecycleState.resumed) {
+    // Refresh session when app comes to foreground
+    _refreshSession();
     fetchUserBlogs();
     loadProfileHeader(forceRefresh: true);
   }
 }
+
   void checkOwnership() {
     currentUserId = auth.userId;
     isCurrentUser = widget.userId == currentUserId;
     setState(() {});
+  }
+
+  /// Refresh the authentication session
+  Future<void> _refreshSession() async {
+    try {
+      await Supabase.instance.client.auth.refreshSession();
+      debugPrint('Session refreshed successfully');
+    } catch (e) {
+      debugPrint('Session refresh error: $e');
+      // If refresh fails, user needs to login again
+      if (mounted && e.toString().contains('invalid_grant')) {
+        _handleSessionExpired();
+      }
+    }
+  }
+
+  /// Handle expired session - redirect to login
+  void _handleSessionExpired() {
+    if (!mounted) return;
+    Navigator.of(context).popUntil((route) => route.isFirst);
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Session expired. Please login again.')),
+    );
   }
 
   Future<void> loadProfileHeader({bool forceRefresh = false}) async {
@@ -614,6 +640,9 @@ void didChangeAppLifecycleState(AppLifecycleState state) {
     PaintingBinding.instance.imageCache.clearLiveImages();
 
     try {
+      // Refresh session before updating profile
+      await _refreshSession();
+
       String? newAvatarPath;
       if (image != null) {
         newAvatarPath = await storage.uploadProfileImage(
@@ -621,6 +650,7 @@ void didChangeAppLifecycleState(AppLifecycleState state) {
           currentUserId!,
         );
       }
+      
       await Supabase.instance.client.auth.updateUser(
         UserAttributes(
           data: {
@@ -669,12 +699,30 @@ void didChangeAppLifecycleState(AppLifecycleState state) {
       });
 
       await loadProfileHeader(forceRefresh: true);
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Profile updated successfully!')),
+        );
+      }
+    } on AuthException catch (e) {
+      debugPrint('Profile update auth error: $e');
+      if (mounted) {
+        // Check if it's a session error
+        if (e.message.contains('Session') || e.statusCode == '403') {
+          _handleSessionExpired();
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Auth error: ${e.message}')),
+          );
+        }
+      }
     } catch (e) {
       debugPrint('Profile update error: $e');
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Error updating profile: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error updating profile: $e')),
+        );
       }
     } finally {
       if (mounted) setState(() => loading = false);
