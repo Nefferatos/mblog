@@ -1,5 +1,4 @@
 import 'dart:io';
-import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -11,7 +10,6 @@ import '../services/auth_service.dart';
 import '../models/blog.dart';
 import '../widgets/blog_card.dart';
 import 'blog_detail_page.dart';
-import 'package:flutter/painting.dart';
 
 class ProfilePage extends StatefulWidget {
   final String userId;
@@ -21,7 +19,7 @@ class ProfilePage extends StatefulWidget {
   State<ProfilePage> createState() => _ProfilePageState();
 }
 
-class _ProfilePageState extends State<ProfilePage> {
+class _ProfilePageState extends State<ProfilePage> with WidgetsBindingObserver {
   final SupabaseService service = SupabaseService();
   final StorageService storage = StorageService();
   final AuthService auth = AuthService();
@@ -45,24 +43,40 @@ class _ProfilePageState extends State<ProfilePage> {
   static const Color colorLightGrey = Color(0xFFEEEEEE);
   static const Color colorDirtyWhite = Color(0xFFF5F5F5);
 
-  @override
-  void initState() {
-    super.initState();
-    checkOwnership();
-    loadProfileHeader();
-    fetchUserBlogs();
-  }
+@override
+void initState() {
+  super.initState();
+  WidgetsBinding.instance.addObserver(this); 
+  checkOwnership();
+  loadProfileHeader();
+  fetchUserBlogs();
+}
 
+@override
+void dispose() {
+  WidgetsBinding.instance.removeObserver(this);
+  super.dispose();
+}
+
+@override
+void didChangeAppLifecycleState(AppLifecycleState state) {
+  if (state == AppLifecycleState.resumed) {
+    fetchUserBlogs();
+    loadProfileHeader(forceRefresh: true);
+  }
+}
   void checkOwnership() {
     currentUserId = auth.userId;
     isCurrentUser = widget.userId == currentUserId;
     setState(() {});
   }
 
-  Future<void> loadProfileHeader() async {
+  Future<void> loadProfileHeader({bool forceRefresh = false}) async {
     setState(() => loading = true);
 
     try {
+      userEmail = auth.currentUser?.email;
+
       final profileData = await Supabase.instance.client
           .from('profiles')
           .select()
@@ -71,20 +85,42 @@ class _ProfilePageState extends State<ProfilePage> {
 
       if (profileData != null) {
         profileUsername = profileData['username'] ?? "Anonymous";
-        profileAvatarUrl = profileData['avatar_url'];
+        final avatarPath = profileData['avatar_url'] as String?;
+
+        if (avatarPath != null && avatarPath.isNotEmpty) {
+          final rawUrl = Supabase.instance.client.storage
+              .from('blog-images')
+              .getPublicUrl(avatarPath);
+
+          profileAvatarUrl = forceRefresh
+              ? '$rawUrl?ts=${DateTime.now().millisecondsSinceEpoch}'
+              : rawUrl;
+        } else {
+          profileAvatarUrl = null;
+        }
       } else if (isCurrentUser) {
         profileUsername = auth.displayName;
         final avatarPath = auth.currentUser?.userMetadata?['avatar'] as String?;
-        if (avatarPath != null) {
-          profileAvatarUrl = Supabase.instance.client.storage
+
+        if (avatarPath != null && avatarPath.isNotEmpty) {
+          final rawUrl = Supabase.instance.client.storage
               .from('blog-images')
               .getPublicUrl(avatarPath);
+
+          profileAvatarUrl = forceRefresh
+              ? '$rawUrl?ts=${DateTime.now().millisecondsSinceEpoch}'
+              : rawUrl;
+        } else {
+          profileAvatarUrl = null;
         }
       } else {
         profileUsername = "New User";
+        profileAvatarUrl = null;
       }
     } catch (e) {
+      debugPrint('Load profile header error: $e');
       profileUsername = "Anonymous";
+      profileAvatarUrl = null;
     } finally {
       if (mounted) setState(() => loading = false);
     }
@@ -122,6 +158,7 @@ class _ProfilePageState extends State<ProfilePage> {
         loading = false;
       });
     } catch (e) {
+      debugPrint('Fetch blogs error: $e');
       if (mounted) setState(() => loading = false);
     }
   }
@@ -208,7 +245,7 @@ class _ProfilePageState extends State<ProfilePage> {
         color: colorBlack,
         onRefresh: () async {
           currentPage = 0;
-          await loadProfileHeader();
+          await loadProfileHeader(forceRefresh: true);
           await fetchUserBlogs();
         },
         child: loading
@@ -219,19 +256,24 @@ class _ProfilePageState extends State<ProfilePage> {
                 itemCount: blogs.length + 2,
                 itemBuilder: (context, index) {
                   if (index == 0) return _buildHeader();
-                  if (index == blogs.length + 1)
+                  if (index == blogs.length + 1) {
                     return _buildPaginationControls();
+                  }
 
                   final blog = blogs[index - 1];
                   return BlogCard(
                     blog: blog,
                     currentUserId: currentUserId,
-                    onTap: () => Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => BlogDetailPage(blog: blog),
-                      ),
-                    ),
+                    onTap: () async {
+                      await Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => BlogDetailPage(blog: blog),
+                        ),
+                      );
+                      fetchUserBlogs();
+                      loadProfileHeader(forceRefresh: true);
+                    },
                     onEdit: isCurrentUser
                         ? () async {
                             final updated = await Navigator.push(
@@ -243,18 +285,21 @@ class _ProfilePageState extends State<ProfilePage> {
 
                             if (updated == true) {
                               fetchUserBlogs();
+                              loadProfileHeader(forceRefresh: true);
                             }
                           }
                         : null,
-
                     onDelete: isCurrentUser ? () => _handleDelete(blog) : null,
                     onLike: () => _toggleLike(blog),
-                    onComment: () => Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => BlogDetailPage(blog: blog),
-                      ),
-                    ),
+                    onComment: () async {
+                      await Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => BlogDetailPage(blog: blog),
+                        ),
+                      );
+                      fetchUserBlogs();
+                    },
                   );
                 },
               ),
@@ -279,7 +324,13 @@ class _ProfilePageState extends State<ProfilePage> {
                         width: 100,
                         height: 100,
                         fit: BoxFit.cover,
-                        gaplessPlayback: false,
+                        gaplessPlayback: true,
+                        loadingBuilder: (context, child, loadingProgress) {
+                          if (loadingProgress == null) return child;
+                          return const Center(
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          );
+                        },
                       )
                     : Container(
                         width: 100,
@@ -292,7 +343,6 @@ class _ProfilePageState extends State<ProfilePage> {
                         ),
                       ),
               ),
-
               const SizedBox(height: 16),
               Text(
                 profileUsername,
@@ -506,11 +556,12 @@ class _ProfilePageState extends State<ProfilePage> {
                   }
                 },
                 child: CircleAvatar(
+                  key: ValueKey(tempImage?.path ?? profileAvatarUrl),
                   radius: 40,
                   backgroundImage: tempImage != null
                       ? (kIsWeb
                             ? MemoryImage(tempWebBytes!)
-                            : FileImage(File(tempImage!.path)) as ImageProvider)
+                            : FileImage(File(tempImage!.path)))
                       : (profileAvatarUrl != null
                             ? NetworkImage(profileAvatarUrl!)
                             : null),
@@ -557,40 +608,74 @@ class _ProfilePageState extends State<ProfilePage> {
     XFile? image,
     Uint8List? bytes,
   ) async {
+    if (currentUserId == null) return;
     setState(() => loading = true);
     PaintingBinding.instance.imageCache.clear();
     PaintingBinding.instance.imageCache.clearLiveImages();
 
     try {
-      String? avatarUrl;
-
+      String? newAvatarPath;
       if (image != null) {
-        final newPath = await storage.uploadProfileImage(
+        newAvatarPath = await storage.uploadProfileImage(
           kIsWeb ? bytes! : File(image.path),
           currentUserId!,
         );
-
-        final rawUrl = Supabase.instance.client.storage
-            .from('blog-images')
-            .getPublicUrl(newPath);
-
-        avatarUrl = '$rawUrl?ts=${DateTime.now().millisecondsSinceEpoch}';
       }
+      await Supabase.instance.client.auth.updateUser(
+        UserAttributes(
+          data: {
+            'display_name': name,
+            if (newAvatarPath != null) 'avatar': newAvatarPath,
+          },
+        ),
+      );
+
+      final profileUpdates = {
+        'username': name,
+        if (newAvatarPath != null) 'avatar_url': newAvatarPath,
+      };
 
       await Supabase.instance.client
           .from('profiles')
-          .update({
-            'username': name,
-            if (avatarUrl != null) 'avatar_url': avatarUrl,
-          })
+          .update(profileUpdates)
           .eq('id', currentUserId!);
+
+      await Supabase.instance.client
+          .from('blogs')
+          .update({'username': name})
+          .eq('user_id', currentUserId!);
+
+      String? displayAvatarUrl;
+      if (newAvatarPath != null) {
+        final rawUrl = Supabase.instance.client.storage
+            .from('blog-images')
+            .getPublicUrl(newAvatarPath);
+        displayAvatarUrl =
+            '$rawUrl?ts=${DateTime.now().millisecondsSinceEpoch}';
+      }
 
       setState(() {
         profileUsername = name;
-        if (avatarUrl != null) profileAvatarUrl = avatarUrl;
+        if (displayAvatarUrl != null) {
+          profileAvatarUrl = displayAvatarUrl;
+        }
+
+        blogs = blogs.map((blog) {
+          if (blog.userId == currentUserId) {
+            return blog.copyWith(username: name);
+          }
+          return blog;
+        }).toList();
       });
+
+      await loadProfileHeader(forceRefresh: true);
     } catch (e) {
       debugPrint('Profile update error: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Error updating profile: $e')));
+      }
     } finally {
       if (mounted) setState(() => loading = false);
     }

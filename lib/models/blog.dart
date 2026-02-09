@@ -86,9 +86,14 @@ class Blog {
 }
 }
 extension BlogDisplayName on Blog {
-  String get displayNameComputed {
+  String displayNameComputed({String Function(String userId)? getLatestUsername}) {
+    if (getLatestUsername != null) {
+      final latestName = getLatestUsername(userId);
+      if (latestName.isNotEmpty) return latestName;
+    }
     if (username != null && username!.isNotEmpty) return username!;
     if (userEmail != null && userEmail!.isNotEmpty) return userEmail!;
     return 'Anonymous';
   }
 }
+

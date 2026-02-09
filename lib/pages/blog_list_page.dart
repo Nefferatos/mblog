@@ -96,9 +96,10 @@ class _BlogListPageState extends State<BlogListPage> {
     Supabase.instance.client
         .channel('public:blogs')
         .on(
-            RealtimeListenTypes.postgresChanges,
-            ChannelFilter(event: '*', schema: 'public', table: 'blogs'),
-            (payload, [ref]) => fetchBlogs())
+          RealtimeListenTypes.postgresChanges,
+          ChannelFilter(event: '*', schema: 'public', table: 'blogs'),
+          (payload, [ref]) => fetchBlogs(),
+        )
         .subscribe();
   }
 
@@ -124,15 +125,26 @@ class _BlogListPageState extends State<BlogListPage> {
     }
 
     try {
-      // FIX: Query Supabase directly to search ALL blogs, not just local list
-      final data = await Supabase.instance.client
-          .from('blogs')
-          .select()
-          .ilike('title', '%$query%') // Case-insensitive search
-          .limit(5);
+final data = await Supabase.instance.client
+    .from('blogs')
+    .select('*, likes(*)')
+    .or('username.ilike.%$query%,title.ilike.%$query%') 
+    .limit(5);
+
+      final results = (data as List).map((e) {
+        var blog = Blog.fromMap(e);
+        final likes = (e['likes'] as List?) ?? [];
+        return blog.copyWith(
+          likesCount: likes.length,
+          isLiked: userId != null && likes.any((l) => l['user_id'] == userId),
+          username: blog.username ?? 'Anonymous',
+        );
+      }).toList();
+
+      if (!mounted) return;
 
       setState(() {
-        searchResults = (data as List).map((e) => Blog.fromMap(e)).toList();
+        searchResults = results;
       });
 
       if (searchResults.isNotEmpty) {
@@ -163,7 +175,9 @@ class _BlogListPageState extends State<BlogListPage> {
     await Supabase.instance.client.auth.signOut();
     if (!mounted) return;
     Navigator.of(context, rootNavigator: true).pushAndRemoveUntil(
-        MaterialPageRoute(builder: (_) => const LoginPage()), (route) => false);
+      MaterialPageRoute(builder: (_) => const LoginPage()),
+      (route) => false,
+    );
   }
 
   void _showOverlay() {
@@ -177,7 +191,7 @@ class _BlogListPageState extends State<BlogListPage> {
     _overlayEntry = null;
   }
 
-  OverlayEntry _createOverlayEntry() {
+OverlayEntry _createOverlayEntry() {
     RenderBox renderBox = context.findRenderObject() as RenderBox;
     var size = renderBox.size;
 
@@ -194,29 +208,92 @@ class _BlogListPageState extends State<BlogListPage> {
             color: Colors.white,
             child: Container(
               constraints: const BoxConstraints(maxHeight: 300),
-              child: ListView.builder(
-                padding: EdgeInsets.zero,
-                shrinkWrap: true,
-                itemCount: searchResults.length,
-                itemBuilder: (context, i) => ListTile(
-                  title: Text(searchResults[i].title,
-                      style: const TextStyle(fontWeight: FontWeight.bold)),
-                  subtitle: Text(searchResults[i].username ?? "Anonymous",
-                      style: const TextStyle(fontSize: 12)),
-                  onTap: () {
-                    _removeOverlay();
-                    searchController.clear();
-                    Navigator.of(context).push(MaterialPageRoute(
-                        builder: (_) =>
-                            BlogDetailPage(blog: searchResults[i])));
-                  },
-                ),
-              ),
+              child: searchResults.isEmpty
+                  ? const Padding(
+                      padding: EdgeInsets.all(16),
+                      child: Text('No results found'),
+                    )
+                  : ListView.builder(
+                      padding: EdgeInsets.zero,
+                      shrinkWrap: true,
+                      itemCount: searchResults.length,
+                      itemBuilder: (context, i) {
+                        final blog = searchResults[i];
+                        return GestureDetector(
+                          onTap: () {
+                            debugPrint('Tapped on blog: ${blog.title}');
+                            searchController.clear();
+                            _removeOverlay();
+                            
+                            Future.delayed(const Duration(milliseconds: 100), () {
+                              Navigator.of(context, rootNavigator: true).push(
+                                MaterialPageRoute(
+                                  builder: (context) => BlogDetailPage(blog: blog),
+                                ),
+                              );
+                            });
+                          },
+                          child: Container(
+                            color: Colors.transparent,
+                            child: ListTile(
+                              title: Text(
+                                blog.title,
+                                style: const TextStyle(fontWeight: FontWeight.bold),
+                              ),
+                              subtitle: Text(
+                                blog.username ?? "Anonymous",
+                                style: const TextStyle(fontSize: 12),
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
             ),
           ),
         ),
       ),
     );
+  }
+
+  Future<void> _handleDelete(Blog blog) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: Colors.white,
+        title: const Text("Delete Post"),
+        content: const Text("Are you sure you want to delete this forever?"),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text(
+              "Cancel",
+              style: TextStyle(color: Color(0xFF757575)),
+            ),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text(
+              "Delete",
+              style: TextStyle(
+                color: Colors.redAccent,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      setState(() => loading = true);
+      final success = await service.deleteBlog(blog.id);
+      if (success) {
+        fetchBlogs();
+      } else {
+        setState(() => loading = false);
+      }
+    }
   }
 
   @override
@@ -236,11 +313,14 @@ class _BlogListPageState extends State<BlogListPage> {
             children: [
               Row(
                 children: [
-                  const Text('FEED',
-                      style: TextStyle(
-                          color: colorBlack,
-                          fontWeight: FontWeight.w900,
-                          fontSize: 20)),
+                  const Text(
+                    'FEED',
+                    style: TextStyle(
+                      color: colorBlack,
+                      fontWeight: FontWeight.w900,
+                      fontSize: 20,
+                    ),
+                  ),
                   const SizedBox(width: 16),
                   Expanded(
                     child: CompositedTransformTarget(
@@ -264,8 +344,9 @@ class _BlogListPageState extends State<BlogListPage> {
           shape: const CircleBorder(),
           child: const Icon(Icons.add, color: Colors.white, size: 28),
           onPressed: () async {
-            final res = await Navigator.of(context)
-                .push(MaterialPageRoute(builder: (_) => const CreateBlogPage()));
+            final res = await Navigator.of(
+              context,
+            ).push(MaterialPageRoute(builder: (_) => const CreateBlogPage()));
             if (res != null) fetchBlogs();
           },
         ),
@@ -288,18 +369,28 @@ class _BlogListPageState extends State<BlogListPage> {
         return BlogCard(
           blog: blog,
           currentUserId: userId,
-          onTap: () => Navigator.of(context)
-              .push(MaterialPageRoute(builder: (_) => BlogDetailPage(blog: blog))),
+          onTap: () => Navigator.of(
+            context,
+          ).push(MaterialPageRoute(builder: (_) => BlogDetailPage(blog: blog))),
           onLike: () => toggleLike(blog),
-          onComment: () => Navigator.of(context)
-              .push(MaterialPageRoute(builder: (_) => BlogDetailPage(blog: blog))),
-          onProfileTap: () => Navigator.of(context)
-              .push(MaterialPageRoute(builder: (_) => ProfilePage(userId: blog.userId))),
+          onComment: () => Navigator.of(
+            context,
+          ).push(MaterialPageRoute(builder: (_) => BlogDetailPage(blog: blog))),
+          onProfileTap: () async {
+            await Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => ProfilePage(userId: blog.userId),
+              ),
+            );
+            fetchBlogs();
+          },
           onEdit: () async {
-            final updated = await Navigator.of(context)
-                .push(MaterialPageRoute(builder: (_) => UpdateBlogPage(blog: blog)));
+            final updated = await Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => UpdateBlogPage(blog: blog)),
+            );
             if (updated != null) fetchBlogs();
           },
+          onDelete: () => _handleDelete(blog),
         );
       },
     );
@@ -312,17 +403,25 @@ class _BlogListPageState extends State<BlogListPage> {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          _navButton(Icons.chevron_left,
-              currentPage > 0 ? () => _changePage(-1) : null),
+          _navButton(
+            Icons.chevron_left,
+            currentPage > 0 ? () => _changePage(-1) : null,
+          ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 24),
             child: Text(
               "Page ${currentPage + 1}",
               style: const TextStyle(
-                  fontWeight: FontWeight.bold, color: colorBlack, fontSize: 16),
+                fontWeight: FontWeight.bold,
+                color: colorBlack,
+                fontSize: 16,
+              ),
             ),
           ),
-          _navButton(Icons.chevron_right, hasNext ? () => _changePage(1) : null),
+          _navButton(
+            Icons.chevron_right,
+            hasNext ? () => _changePage(1) : null,
+          ),
         ],
       ),
     );
@@ -361,13 +460,17 @@ class _BlogListPageState extends State<BlogListPage> {
           color: isSelected ? colorBlack : Colors.white,
           borderRadius: BorderRadius.circular(20),
           border: Border.all(
-              color: isSelected ? colorBlack : colorGrey.withOpacity(0.3)),
+            color: isSelected ? colorBlack : colorGrey.withOpacity(0.3),
+          ),
         ),
-        child: Text(label,
-            style: TextStyle(
-                color: isSelected ? Colors.white : colorBlack,
-                fontSize: 12,
-                fontWeight: FontWeight.bold)),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: isSelected ? Colors.white : colorBlack,
+            fontSize: 12,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
       ),
     );
   }
@@ -376,7 +479,9 @@ class _BlogListPageState extends State<BlogListPage> {
     return Container(
       height: 40,
       decoration: BoxDecoration(
-          color: colorDirtyWhite, borderRadius: BorderRadius.circular(25)),
+        color: colorDirtyWhite,
+        borderRadius: BorderRadius.circular(25),
+      ),
       child: TextField(
         controller: searchController,
         focusNode: _focusNode,
@@ -394,21 +499,24 @@ class _BlogListPageState extends State<BlogListPage> {
   Widget _buildUserMenu() {
     return PopupMenuButton<String>(
       icon: const Icon(Icons.account_circle_outlined, size: 30),
-      onSelected: (v) {
+      onSelected: (v) async {
         if (v == 'logout') {
           logout();
         } else if (v == 'profile') {
           if (userId != null) {
-            Navigator.of(context).push(MaterialPageRoute(
-                builder: (_) => ProfilePage(userId: userId!)));
+            await Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => ProfilePage(userId: userId!)),
+            );
+            fetchBlogs();
           }
         }
       },
       itemBuilder: (context) => [
         const PopupMenuItem(value: 'profile', child: Text('My Profile')),
         const PopupMenuItem(
-            value: 'logout',
-            child: Text('Logout', style: TextStyle(color: Colors.red))),
+          value: 'logout',
+          child: Text('Logout', style: TextStyle(color: Colors.red)),
+        ),
       ],
     );
   }

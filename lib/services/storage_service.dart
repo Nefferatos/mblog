@@ -31,23 +31,41 @@ class StorageService {
       return null;
     }
   }
-  Future<String> uploadProfileImage(dynamic file, String userId) async {
-    final fileName = 'avatar_${DateTime.now().millisecondsSinceEpoch}.jpg';
-    final path = 'avatars/$userId/$fileName';
+  Future<String?> uploadProfileImage(
+  dynamic file,
+  String userId,
+) async {
+  final path = 'avatar/avatar-$userId.png';
 
-    final storage = client.storage.from('blog-images');
-
+  try {
     if (kIsWeb) {
-      await storage.uploadBinary(
-        path,
-        file as Uint8List,
-        fileOptions: const FileOptions(contentType: 'image/jpeg'),
-      );
+      final bytes =
+          file is Uint8List ? file : await file.readAsBytes();
+
+      await client.storage.from('blog-images').uploadBinary(
+            path,
+            bytes,
+            fileOptions: const FileOptions(
+              upsert: true,
+              contentType: 'image/png',
+            ),
+          );
     } else {
-      await storage.upload(path, file);
+      await client.storage.from('blog-images').upload(
+            path,
+            file,
+            fileOptions: const FileOptions(
+              upsert: true,
+              contentType: 'image/png',
+            ),
+          );
     }
 
-    return path; 
+    return path;
+  } catch (e) {
+    debugPrint('Profile upload error: $e');
+    return null;
   }
+}
 
 }
