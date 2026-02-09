@@ -11,6 +11,7 @@ import '../services/auth_service.dart';
 import '../models/blog.dart';
 import '../widgets/blog_card.dart';
 import 'blog_detail_page.dart';
+import 'package:flutter/painting.dart';
 
 class ProfilePage extends StatefulWidget {
   final String userId;
@@ -27,7 +28,7 @@ class _ProfilePageState extends State<ProfilePage> {
 
   String? currentUserId;
   String? userEmail;
-  
+
   String? profileAvatarUrl;
   String profileUsername = "Loading...";
 
@@ -58,9 +59,9 @@ class _ProfilePageState extends State<ProfilePage> {
     setState(() {});
   }
 
-Future<void> loadProfileHeader() async {
+  Future<void> loadProfileHeader() async {
     setState(() => loading = true);
-    
+
     try {
       final profileData = await Supabase.instance.client
           .from('profiles')
@@ -76,7 +77,8 @@ Future<void> loadProfileHeader() async {
         final avatarPath = auth.currentUser?.userMetadata?['avatar'] as String?;
         if (avatarPath != null) {
           profileAvatarUrl = Supabase.instance.client.storage
-              .from('blog-images').getPublicUrl(avatarPath);
+              .from('blog-images')
+              .getPublicUrl(avatarPath);
         }
       } else {
         profileUsername = "New User";
@@ -106,7 +108,9 @@ Future<void> loadProfileHeader() async {
         final likes = (e['likes'] as List?) ?? [];
         return blog.copyWith(
           likesCount: likes.length,
-          isLiked: currentUserId != null && likes.any((l) => l['user_id'] == currentUserId),
+          isLiked:
+              currentUserId != null &&
+              likes.any((l) => l['user_id'] == currentUserId),
           username: blog.username ?? "Anonymous",
           authorAvatarUrl: blog.authorAvatarUrl,
         );
@@ -150,8 +154,20 @@ Future<void> loadProfileHeader() async {
         title: const Text("Delete Post"),
         content: const Text("Are you sure you want to delete this forever?"),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text("Cancel", style: TextStyle(color: colorGrey))),
-          TextButton(onPressed: () => Navigator.pop(context, true), child: const Text("Delete", style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold))),
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text("Cancel", style: TextStyle(color: colorGrey)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text(
+              "Delete",
+              style: TextStyle(
+                color: Colors.redAccent,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
         ],
       ),
     );
@@ -172,10 +188,20 @@ Future<void> loadProfileHeader() async {
         foregroundColor: colorBlack,
         elevation: 0,
         centerTitle: true,
-        title: const Text("PROFILE", style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 1.5, fontSize: 16)),
+        title: const Text(
+          "PROFILE",
+          style: TextStyle(
+            fontWeight: FontWeight.w900,
+            letterSpacing: 1.5,
+            fontSize: 16,
+          ),
+        ),
         actions: [
           if (isCurrentUser)
-            IconButton(icon: const Icon(Icons.more_horiz_rounded), onPressed: _showSettingsMenu),
+            IconButton(
+              icon: const Icon(Icons.more_horiz_rounded),
+              onPressed: _showSettingsMenu,
+            ),
         ],
       ),
       body: RefreshIndicator(
@@ -193,31 +219,42 @@ Future<void> loadProfileHeader() async {
                 itemCount: blogs.length + 2,
                 itemBuilder: (context, index) {
                   if (index == 0) return _buildHeader();
-                  if (index == blogs.length + 1) return _buildPaginationControls();
+                  if (index == blogs.length + 1)
+                    return _buildPaginationControls();
 
                   final blog = blogs[index - 1];
                   return BlogCard(
                     blog: blog,
                     currentUserId: currentUserId,
-                    onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => BlogDetailPage(blog: blog))),
+                    onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => BlogDetailPage(blog: blog),
+                      ),
+                    ),
                     onEdit: isCurrentUser
-    ? () async {
-        final updated = await Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (_) => UpdateBlogPage(blog: blog),
-          ),
-        );
+                        ? () async {
+                            final updated = await Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => UpdateBlogPage(blog: blog),
+                              ),
+                            );
 
-        if (updated == true) {
-          fetchUserBlogs();
-        }
-      }
-    : null,
+                            if (updated == true) {
+                              fetchUserBlogs();
+                            }
+                          }
+                        : null,
 
                     onDelete: isCurrentUser ? () => _handleDelete(blog) : null,
                     onLike: () => _toggleLike(blog),
-                    onComment: () => Navigator.push(context, MaterialPageRoute(builder: (_) => BlogDetailPage(blog: blog))),
+                    onComment: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => BlogDetailPage(blog: blog),
+                      ),
+                    ),
                   );
                 },
               ),
@@ -234,14 +271,37 @@ Future<void> loadProfileHeader() async {
           padding: const EdgeInsets.only(bottom: 32, top: 16),
           child: Column(
             children: [
-              CircleAvatar(
-                radius: 50,
-                backgroundColor: colorDirtyWhite,
-                backgroundImage: profileAvatarUrl != null ? NetworkImage(profileAvatarUrl!) : null,
-                child: profileAvatarUrl == null ? const Icon(Icons.person, size: 50, color: colorGrey) : null,
+              ClipOval(
+                child: profileAvatarUrl != null
+                    ? Image.network(
+                        profileAvatarUrl!,
+                        key: ValueKey(profileAvatarUrl),
+                        width: 100,
+                        height: 100,
+                        fit: BoxFit.cover,
+                        gaplessPlayback: false,
+                      )
+                    : Container(
+                        width: 100,
+                        height: 100,
+                        color: colorDirtyWhite,
+                        child: const Icon(
+                          Icons.person,
+                          size: 50,
+                          color: colorGrey,
+                        ),
+                      ),
               ),
+
               const SizedBox(height: 16),
-              Text(profileUsername, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: colorBlack)),
+              Text(
+                profileUsername,
+                style: const TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.bold,
+                  color: colorBlack,
+                ),
+              ),
               if (isCurrentUser) ...[
                 const SizedBox(height: 4),
                 Text(userEmail ?? "", style: const TextStyle(color: colorGrey)),
@@ -250,9 +310,17 @@ Future<void> loadProfileHeader() async {
                   onPressed: _showEditProfileDialog,
                   style: OutlinedButton.styleFrom(
                     side: const BorderSide(color: colorLightGrey),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
                   ),
-                  child: const Text("Edit Profile", style: TextStyle(color: colorBlack, fontWeight: FontWeight.bold)),
+                  child: const Text(
+                    "Edit Profile",
+                    style: TextStyle(
+                      color: colorBlack,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
                 ),
               ],
             ],
@@ -263,7 +331,14 @@ Future<void> loadProfileHeader() async {
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
           child: Row(
             children: [
-              Text(isCurrentUser ? "MY POSTS" : "POSTS", style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 11, color: colorGrey)),
+              Text(
+                isCurrentUser ? "MY POSTS" : "POSTS",
+                style: const TextStyle(
+                  fontWeight: FontWeight.w900,
+                  fontSize: 11,
+                  color: colorGrey,
+                ),
+              ),
               const SizedBox(width: 12),
               Expanded(child: Divider(color: colorBlack.withOpacity(0.05))),
             ],
@@ -278,7 +353,6 @@ Future<void> loadProfileHeader() async {
     );
   }
 
-
   Widget _buildSortRow() {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
@@ -288,7 +362,14 @@ Future<void> loadProfileHeader() async {
           const SizedBox(width: 8),
           _sortButton("Oldest", isAscending, () => _toggleSort(true)),
           const Spacer(),
-          Text("Page ${currentPage + 1}", style: const TextStyle(color: colorGrey, fontSize: 11, fontWeight: FontWeight.bold)),
+          Text(
+            "Page ${currentPage + 1}",
+            style: const TextStyle(
+              color: colorGrey,
+              fontSize: 11,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
         ],
       ),
     );
@@ -305,7 +386,14 @@ Future<void> loadProfileHeader() async {
           borderRadius: BorderRadius.circular(20),
           border: Border.all(color: isSelected ? colorBlack : colorLightGrey),
         ),
-        child: Text(label, style: TextStyle(color: isSelected ? Colors.white : colorBlack, fontSize: 11, fontWeight: FontWeight.bold)),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: isSelected ? Colors.white : colorBlack,
+            fontSize: 11,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
       ),
     );
   }
@@ -318,12 +406,24 @@ Future<void> loadProfileHeader() async {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          _navButton(Icons.chevron_left, currentPage > 0 ? () => _changePage(-1) : null),
+          _navButton(
+            Icons.chevron_left,
+            currentPage > 0 ? () => _changePage(-1) : null,
+          ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 25),
-            child: Text("Page ${currentPage + 1}", style: const TextStyle(fontWeight: FontWeight.bold, color: colorBlack)),
+            child: Text(
+              "Page ${currentPage + 1}",
+              style: const TextStyle(
+                fontWeight: FontWeight.bold,
+                color: colorBlack,
+              ),
+            ),
           ),
-          _navButton(Icons.chevron_right, hasNext ? () => _changePage(1) : null),
+          _navButton(
+            Icons.chevron_right,
+            hasNext ? () => _changePage(1) : null,
+          ),
         ],
       ),
     );
@@ -345,7 +445,9 @@ Future<void> loadProfileHeader() async {
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.white,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
       builder: (context) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -353,14 +455,21 @@ Future<void> loadProfileHeader() async {
             ListTile(
               leading: const Icon(Icons.person_outline, color: colorBlack),
               title: const Text("Edit Name & Photo"),
-              onTap: () { Navigator.pop(context); _showEditProfileDialog(); },
+              onTap: () {
+                Navigator.pop(context);
+                _showEditProfileDialog();
+              },
             ),
             ListTile(
               leading: const Icon(Icons.logout, color: Colors.redAccent),
-              title: const Text("Logout", style: TextStyle(color: Colors.redAccent)),
+              title: const Text(
+                "Logout",
+                style: TextStyle(color: Colors.redAccent),
+              ),
               onTap: () async {
                 await auth.signOut();
-                if (mounted) Navigator.of(context).popUntil((route) => route.isFirst);
+                if (mounted)
+                  Navigator.of(context).popUntil((route) => route.isFirst);
               },
             ),
           ],
@@ -385,32 +494,56 @@ Future<void> loadProfileHeader() async {
             children: [
               GestureDetector(
                 onTap: () async {
-                  final img = await ImagePicker().pickImage(source: ImageSource.gallery);
+                  final img = await ImagePicker().pickImage(
+                    source: ImageSource.gallery,
+                  );
                   if (img != null) {
                     final bytes = await img.readAsBytes();
-                    setDialogState(() { tempImage = img; tempWebBytes = bytes; });
+                    setDialogState(() {
+                      tempImage = img;
+                      tempWebBytes = bytes;
+                    });
                   }
                 },
                 child: CircleAvatar(
                   radius: 40,
-                  backgroundImage: tempImage != null 
-                    ? (kIsWeb ? MemoryImage(tempWebBytes!) : FileImage(File(tempImage!.path)) as ImageProvider)
-                    : (profileAvatarUrl != null ? NetworkImage(profileAvatarUrl!) : null),
-                  child: (tempImage == null && profileAvatarUrl == null) ? const Icon(Icons.camera_alt) : null,
+                  backgroundImage: tempImage != null
+                      ? (kIsWeb
+                            ? MemoryImage(tempWebBytes!)
+                            : FileImage(File(tempImage!.path)) as ImageProvider)
+                      : (profileAvatarUrl != null
+                            ? NetworkImage(profileAvatarUrl!)
+                            : null),
+                  child: (tempImage == null && profileAvatarUrl == null)
+                      ? const Icon(Icons.camera_alt)
+                      : null,
                 ),
               ),
               const SizedBox(height: 20),
-              TextField(controller: nameController, decoration: const InputDecoration(labelText: "Display Name")),
+              TextField(
+                controller: nameController,
+                decoration: const InputDecoration(labelText: "Display Name"),
+              ),
             ],
           ),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text("Cancel"),
+            ),
             ElevatedButton(
               onPressed: () async {
                 Navigator.pop(context);
-                await _updateProfile(nameController.text, tempImage, tempWebBytes);
+                await _updateProfile(
+                  nameController.text,
+                  tempImage,
+                  tempWebBytes,
+                );
               },
-              style: ElevatedButton.styleFrom(backgroundColor: colorBlack, foregroundColor: Colors.white),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: colorBlack,
+                foregroundColor: Colors.white,
+              ),
               child: const Text("Save"),
             ),
           ],
@@ -419,21 +552,47 @@ Future<void> loadProfileHeader() async {
     );
   }
 
-  Future<void> _updateProfile(String name, XFile? image, Uint8List? bytes) async {
+  Future<void> _updateProfile(
+    String name,
+    XFile? image,
+    Uint8List? bytes,
+  ) async {
     setState(() => loading = true);
+    PaintingBinding.instance.imageCache.clear();
+    PaintingBinding.instance.imageCache.clearLiveImages();
+
     try {
-      String? newPath;
+      String? avatarUrl;
+
       if (image != null) {
-        newPath = await storage.uploadProfileImage(kIsWeb ? bytes! : File(image.path), currentUserId!);
+        final newPath = await storage.uploadProfileImage(
+          kIsWeb ? bytes! : File(image.path),
+          currentUserId!,
+        );
+
+        final rawUrl = Supabase.instance.client.storage
+            .from('blog-images')
+            .getPublicUrl(newPath);
+
+        avatarUrl = '$rawUrl?ts=${DateTime.now().millisecondsSinceEpoch}';
       }
-      await Supabase.instance.client.auth.updateUser(UserAttributes(data: {'display_name': name, if (newPath != null) 'avatar': newPath}));
-      
-      // Refresh local state
-      await loadProfileHeader();
+
+      await Supabase.instance.client
+          .from('profiles')
+          .update({
+            'username': name,
+            if (avatarUrl != null) 'avatar_url': avatarUrl,
+          })
+          .eq('id', currentUserId!);
+
+      setState(() {
+        profileUsername = name;
+        if (avatarUrl != null) profileAvatarUrl = avatarUrl;
+      });
     } catch (e) {
-      debugPrint("Update error: $e");
+      debugPrint('Profile update error: $e');
     } finally {
-      setState(() => loading = false);
+      if (mounted) setState(() => loading = false);
     }
   }
 }
