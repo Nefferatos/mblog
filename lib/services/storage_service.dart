@@ -35,7 +35,7 @@ class StorageService {
   dynamic file,
   String userId,
 ) async {
-  final path = 'avatar/avatar-$userId.png';
+  final path = 'avatar/avatar-$userId-${DateTime.now().millisecondsSinceEpoch}.png';
 
   try {
     if (kIsWeb) {

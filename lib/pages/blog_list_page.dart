@@ -24,9 +24,11 @@ class _BlogListPageState extends State<BlogListPage> {
   final service = SupabaseService();
 
   List<Blog> allBlogs = [];
-  List<Blog> searchResults = [];
+  List<Map<String, String>> searchUsers = [];
   bool loading = true;
   String? userId;
+  String userDisplayName = 'U';
+  String? userAvatarUrl;
 
   // --- Pagination & Sorting State ---
   int currentPage = 0;
@@ -48,15 +50,60 @@ class _BlogListPageState extends State<BlogListPage> {
     loadUser();
     fetchBlogs();
     setupRealtime();
-
-    _focusNode.addListener(() {
-      if (!_focusNode.hasFocus) _removeOverlay();
-    });
   }
 
-  void loadUser() {
+  Future<void> loadUser() async {
     final user = Supabase.instance.client.auth.currentUser;
-    setState(() => userId = user?.id);
+    if (user == null) {
+      if (mounted) {
+        setState(() {
+          userId = null;
+          userAvatarUrl = null;
+          userDisplayName = 'U';
+        });
+      }
+      return;
+    }
+
+    String nextName =
+        user.userMetadata?['display_name'] ??
+        user.userMetadata?['full_name'] ??
+        user.userMetadata?['username'] ??
+        user.email?.split('@')[0] ??
+        'User';
+    String? nextAvatar =
+        user.userMetadata?['avatar_url'] ??
+        user.userMetadata?['avatar'] ??
+        user.userMetadata?['picture'];
+
+    try {
+      final profile = await Supabase.instance.client
+          .from('profiles')
+          .select('username, avatar_url')
+          .eq('id', user.id)
+          .maybeSingle();
+
+      if (profile != null) {
+        final profileName = profile['username']?.toString();
+        if (profileName != null && profileName.isNotEmpty) {
+          nextName = profileName;
+        }
+
+        final profileAvatar = profile['avatar_url']?.toString();
+        if (profileAvatar != null && profileAvatar.isNotEmpty) {
+          nextAvatar = profileAvatar;
+        }
+      }
+    } catch (e) {
+      debugPrint('Error loading user profile for menu: $e');
+    }
+
+    if (!mounted) return;
+    setState(() {
+      userId = user.id;
+      userDisplayName = nextName;
+      userAvatarUrl = _toPublicBlogImageUrl(nextAvatar);
+    });
   }
 
   Future<void> fetchBlogs() async {
@@ -65,21 +112,23 @@ class _BlogListPageState extends State<BlogListPage> {
       final from = currentPage * pageSize;
       final to = from + pageSize - 1;
 
-      final data = await Supabase.instance.client
-          .from('blogs')
-          .select('*, likes(*)')
-          .order('created_at', ascending: isAscending)
-          .range(from, to);
+      List<dynamic> data;
+      try {
+        data = await Supabase.instance.client
+            .from('blogs')
+            .select('*, likes(*), profiles:user_id(username, avatar_url)')
+            .order('created_at', ascending: isAscending)
+            .range(from, to);
+      } catch (e) {
+        debugPrint('Feed join query failed, using fallback: $e');
+        data = await Supabase.instance.client
+            .from('blogs')
+            .select('*')
+            .order('created_at', ascending: isAscending)
+            .range(from, to);
+      }
 
-      final updatedBlogs = (data as List).map((e) {
-        var blog = Blog.fromMap(e);
-        final likes = (e['likes'] as List?) ?? [];
-        return blog.copyWith(
-          likesCount: likes.length,
-          isLiked: userId != null && likes.any((l) => l['user_id'] == userId),
-          username: blog.username ?? 'Anonymous',
-        );
-      }).toList();
+      final updatedBlogs = await _hydrateBlogsWithProfiles(data);
 
       if (!mounted) return;
       setState(() {
@@ -87,8 +136,9 @@ class _BlogListPageState extends State<BlogListPage> {
         loading = false;
       });
     } catch (e) {
-      debugPrint('Error: $e');
-      if (mounted) setState(() => loading = false);
+      debugPrint('Error loading blogs: $e');
+      if (!mounted) return;
+      setState(() => loading = false);
     }
   }
 
@@ -118,36 +168,36 @@ class _BlogListPageState extends State<BlogListPage> {
   }
 
   Future<void> _performSearch(String query) async {
-    if (query.isEmpty) {
-      setState(() => searchResults = []);
+    final q = query.trim();
+    if (q.isEmpty) {
+      setState(() => searchUsers = []);
       _removeOverlay();
       return;
     }
 
     try {
-final data = await Supabase.instance.client
-    .from('blogs')
-    .select('*, likes(*)')
-    .or('username.ilike.%$query%,title.ilike.%$query%') 
-    .limit(5);
+      final rows = await Supabase.instance.client
+          .from('profiles')
+          .select('id, username, avatar_url')
+          .ilike('username', '%$q%')
+          .limit(10);
 
-      final results = (data as List).map((e) {
-        var blog = Blog.fromMap(e);
-        final likes = (e['likes'] as List?) ?? [];
-        return blog.copyWith(
-          likesCount: likes.length,
-          isLiked: userId != null && likes.any((l) => l['user_id'] == userId),
-          username: blog.username ?? 'Anonymous',
-        );
-      }).toList();
+      final users = (rows as List).map((row) {
+        final avatar = row['avatar_url']?.toString();
+        return <String, String>{
+          'id': row['id']?.toString() ?? '',
+          'username': row['username']?.toString() ?? 'Anonymous',
+          'avatar_url': _toPublicBlogImageUrl(avatar) ?? '',
+        };
+      }).where((u) => (u['id'] ?? '').isNotEmpty).toList();
 
       if (!mounted) return;
 
       setState(() {
-        searchResults = results;
+        searchUsers = users;
       });
 
-      if (searchResults.isNotEmpty) {
+      if (searchUsers.isNotEmpty) {
         if (_overlayEntry == null) {
           _showOverlay();
         } else {
@@ -158,6 +208,85 @@ final data = await Supabase.instance.client
       }
     } catch (e) {
       debugPrint('Search error: $e');
+    }
+  }
+
+  Future<List<Blog>> _hydrateBlogsWithProfiles(List<dynamic> data) async {
+    final userIds = data
+        .map((e) => e['user_id']?.toString())
+        .whereType<String>()
+        .toSet();
+    final profilesByUserId = await _fetchProfilesByUserIds(userIds);
+    final hydrated = await Future.wait(data.map((e) async {
+      final blog = Blog.fromMap(e);
+      final likes = (e['likes'] as List?) ?? await _fetchLikesByBlogId(blog.id);
+      final profile = profilesByUserId[blog.userId];
+      final usernameFromProfile = profile?['username'];
+      final avatarFromProfile = profile?['avatar_url'];
+
+      return blog.copyWith(
+        likesCount: likes.length,
+        isLiked: userId != null && likes.any((l) => l['user_id'] == userId),
+        username: (usernameFromProfile != null && usernameFromProfile.isNotEmpty)
+            ? usernameFromProfile
+            : (blog.username ?? 'Anonymous'),
+        authorAvatarUrl: _toPublicBlogImageUrl(
+          (avatarFromProfile != null && avatarFromProfile.isNotEmpty)
+              ? avatarFromProfile
+              : blog.authorAvatarUrl,
+        ),
+      );
+    }));
+    return hydrated;
+  }
+
+  Future<Map<String, Map<String, String?>>> _fetchProfilesByUserIds(
+    Set<String> userIds,
+  ) async {
+    if (userIds.isEmpty) return {};
+    try {
+      final rows = await Supabase.instance.client
+          .from('profiles')
+          .select('id, username, avatar_url');
+
+      final profileMap = <String, Map<String, String?>>{};
+      for (final row in (rows as List)) {
+        final id = row['id']?.toString();
+        if (id == null || id.isEmpty) continue;
+        if (!userIds.contains(id)) continue;
+        profileMap[id] = {
+          'username': row['username']?.toString(),
+          'avatar_url': row['avatar_url']?.toString(),
+        };
+      }
+      return profileMap;
+    } catch (e) {
+      debugPrint('Error hydrating profiles for blogs: $e');
+      return {};
+    }
+  }
+
+  Future<void> _handlePullToRefresh() async {
+    _removeOverlay();
+    _focusNode.unfocus();
+    searchController.clear();
+    if (mounted) {
+      setState(() => searchUsers = []);
+    }
+    await loadUser();
+    await fetchBlogs();
+  }
+
+  Future<List<dynamic>> _fetchLikesByBlogId(int blogId) async {
+    try {
+      final rows = await Supabase.instance.client
+          .from('likes')
+          .select('user_id')
+          .eq('blog_id', blogId);
+      return rows as List<dynamic>;
+    } catch (e) {
+      debugPrint('Error fetching likes for blog $blogId: $e');
+      return [];
     }
   }
 
@@ -208,7 +337,7 @@ OverlayEntry _createOverlayEntry() {
             color: Colors.white,
             child: Container(
               constraints: const BoxConstraints(maxHeight: 300),
-              child: searchResults.isEmpty
+              child: searchUsers.isEmpty
                   ? const Padding(
                       padding: EdgeInsets.all(16),
                       child: Text('No results found'),
@@ -216,19 +345,25 @@ OverlayEntry _createOverlayEntry() {
                   : ListView.builder(
                       padding: EdgeInsets.zero,
                       shrinkWrap: true,
-                      itemCount: searchResults.length,
+                      itemCount: searchUsers.length,
                       itemBuilder: (context, i) {
-                        final blog = searchResults[i];
+                        final user = searchUsers[i];
+                        final username = user['username'] ?? 'Anonymous';
+                        final avatarUrl = user['avatar_url'];
+                        final profileUserId = user['id'] ?? '';
                         return GestureDetector(
                           onTap: () {
-                            debugPrint('Tapped on blog: ${blog.title}');
                             searchController.clear();
+                            setState(() => searchUsers = []);
+                            _focusNode.unfocus();
                             _removeOverlay();
-                            
-                            Future.delayed(const Duration(milliseconds: 100), () {
-                              Navigator.of(context, rootNavigator: true).push(
+
+                            if (profileUserId.isEmpty) return;
+                            Future.delayed(const Duration(milliseconds: 80), () {
+                              if (!mounted) return;
+                              Navigator.of(this.context).push(
                                 MaterialPageRoute(
-                                  builder: (context) => BlogDetailPage(blog: blog),
+                                  builder: (_) => ProfilePage(userId: profileUserId),
                                 ),
                               );
                             });
@@ -237,12 +372,24 @@ OverlayEntry _createOverlayEntry() {
                             color: Colors.transparent,
                             child: ListTile(
                               title: Text(
-                                blog.title,
+                                username,
                                 style: const TextStyle(fontWeight: FontWeight.bold),
                               ),
-                              subtitle: Text(
-                                blog.username ?? "Anonymous",
-                                style: const TextStyle(fontSize: 12),
+                              leading: CircleAvatar(
+                                radius: 16,
+                                backgroundColor: colorDirtyWhite,
+                                backgroundImage: (avatarUrl != null && avatarUrl.isNotEmpty)
+                                    ? NetworkImage(avatarUrl)
+                                    : null,
+                                child: (avatarUrl == null || avatarUrl.isEmpty)
+                                    ? Text(
+                                        username.isNotEmpty ? username[0].toUpperCase() : 'A',
+                                        style: const TextStyle(
+                                          fontWeight: FontWeight.bold,
+                                          color: colorBlack,
+                                        ),
+                                      )
+                                    : null,
                               ),
                             ),
                           ),
@@ -336,9 +483,21 @@ OverlayEntry _createOverlayEntry() {
             ],
           ),
         ),
-        body: loading
-            ? const Center(child: CircularProgressIndicator(color: colorBlack))
-            : _buildScrollableContent(),
+        body: RefreshIndicator(
+          color: colorBlack,
+          onRefresh: _handlePullToRefresh,
+          child: loading
+              ? ListView(
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  children: const [
+                    SizedBox(height: 220),
+                    Center(
+                      child: CircularProgressIndicator(color: colorBlack),
+                    ),
+                  ],
+                )
+              : _buildScrollableContent(),
+        ),
         floatingActionButton: FloatingActionButton(
           backgroundColor: colorBlack,
           shape: const CircleBorder(),
@@ -355,10 +514,19 @@ OverlayEntry _createOverlayEntry() {
   }
 
   Widget _buildScrollableContent() {
-    if (allBlogs.isEmpty) return const Center(child: Text("No posts found"));
+    if (allBlogs.isEmpty) {
+      return ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        children: const [
+          SizedBox(height: 220),
+          Center(child: Text("No posts found")),
+        ],
+      );
+    }
 
     return ListView.builder(
       padding: const EdgeInsets.symmetric(vertical: 12),
+      physics: const AlwaysScrollableScrollPhysics(),
       itemCount: allBlogs.length + 1,
       itemBuilder: (context, index) {
         if (index == allBlogs.length) {
@@ -498,7 +666,23 @@ OverlayEntry _createOverlayEntry() {
 
   Widget _buildUserMenu() {
     return PopupMenuButton<String>(
-      icon: const Icon(Icons.account_circle_outlined, size: 30),
+      icon: CircleAvatar(
+        radius: 16,
+        backgroundColor: colorDirtyWhite,
+        backgroundImage: (userAvatarUrl != null && userAvatarUrl!.isNotEmpty)
+            ? NetworkImage(userAvatarUrl!)
+            : null,
+        child: (userAvatarUrl == null || userAvatarUrl!.isEmpty)
+            ? Text(
+                userDisplayName.isNotEmpty ? userDisplayName[0].toUpperCase() : 'U',
+                style: const TextStyle(
+                  color: colorBlack,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 12,
+                ),
+              )
+            : null,
+      ),
       onSelected: (v) async {
         if (v == 'logout') {
           logout();
@@ -507,6 +691,7 @@ OverlayEntry _createOverlayEntry() {
             await Navigator.of(context).push(
               MaterialPageRoute(builder: (_) => ProfilePage(userId: userId!)),
             );
+            await loadUser();
             fetchBlogs();
           }
         }
@@ -519,6 +704,12 @@ OverlayEntry _createOverlayEntry() {
         ),
       ],
     );
+  }
+
+  String? _toPublicBlogImageUrl(String? rawValue) {
+    if (rawValue == null || rawValue.isEmpty) return null;
+    if (rawValue.startsWith('http')) return rawValue;
+    return Supabase.instance.client.storage.from('blog-images').getPublicUrl(rawValue);
   }
 
   @override

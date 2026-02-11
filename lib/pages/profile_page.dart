@@ -158,25 +158,46 @@ void didChangeAppLifecycleState(AppLifecycleState state) {
       final from = currentPage * pageSize;
       final to = from + pageSize - 1;
 
-      final data = await Supabase.instance.client
-          .from('blogs')
-          .select('*, likes(*)')
-          .eq('user_id', widget.userId)
-          .order('created_at', ascending: isAscending)
-          .range(from, to);
+      List<dynamic> data;
+      try {
+        data = await Supabase.instance.client
+            .from('blogs')
+            .select('*, likes(*), profiles:user_id(username, avatar_url)')
+            .eq('user_id', widget.userId)
+            .order('created_at', ascending: isAscending)
+            .range(from, to);
+      } catch (e) {
+        debugPrint('Profile blogs join query failed, using fallback: $e');
+        data = await Supabase.instance.client
+            .from('blogs')
+            .select('*')
+            .eq('user_id', widget.userId)
+            .order('created_at', ascending: isAscending)
+            .range(from, to);
+      }
 
-      final fetchedBlogs = (data as List).map((e) {
+      final profile = await _fetchProfileForCurrentPageUser();
+      final profileUsername = profile['username'];
+      final profileAvatarPath = profile['avatar_url'];
+
+      final fetchedBlogs = await Future.wait(data.map((e) async {
         var blog = Blog.fromMap(e);
-        final likes = (e['likes'] as List?) ?? [];
+        final likes = (e['likes'] as List?) ?? await _fetchLikesByBlogId(blog.id);
         return blog.copyWith(
           likesCount: likes.length,
           isLiked:
               currentUserId != null &&
               likes.any((l) => l['user_id'] == currentUserId),
-          username: blog.username ?? "Anonymous",
-          authorAvatarUrl: blog.authorAvatarUrl,
+          username: (profileUsername != null && profileUsername.isNotEmpty)
+              ? profileUsername
+              : (blog.username ?? "Anonymous"),
+          authorAvatarUrl: _toPublicBlogImageUrl(
+            (profileAvatarPath != null && profileAvatarPath.isNotEmpty)
+                ? profileAvatarPath
+                : blog.authorAvatarUrl,
+          ),
         );
-      }).toList();
+      }));
 
       if (!mounted) return;
       setState(() {
@@ -185,7 +206,39 @@ void didChangeAppLifecycleState(AppLifecycleState state) {
       });
     } catch (e) {
       debugPrint('Fetch blogs error: $e');
-      if (mounted) setState(() => loading = false);
+      if (!mounted) return;
+      setState(() => loading = false);
+    }
+  }
+
+  Future<Map<String, String?>> _fetchProfileForCurrentPageUser() async {
+    try {
+      final row = await Supabase.instance.client
+          .from('profiles')
+          .select('username, avatar_url')
+          .eq('id', widget.userId)
+          .maybeSingle();
+      if (row == null) return {};
+      return {
+        'username': row['username']?.toString(),
+        'avatar_url': row['avatar_url']?.toString(),
+      };
+    } catch (e) {
+      debugPrint('Profile lookup error for blogs: $e');
+      return {};
+    }
+  }
+
+  Future<List<dynamic>> _fetchLikesByBlogId(int blogId) async {
+    try {
+      final rows = await Supabase.instance.client
+          .from('likes')
+          .select('user_id')
+          .eq('blog_id', blogId);
+      return rows as List<dynamic>;
+    } catch (e) {
+      debugPrint('Profile likes lookup error for blog $blogId: $e');
+      return [];
     }
   }
 
@@ -656,6 +709,8 @@ void didChangeAppLifecycleState(AppLifecycleState state) {
           data: {
             'display_name': name,
             if (newAvatarPath != null) 'avatar': newAvatarPath,
+            if (newAvatarPath != null) 'avatar_url': newAvatarPath,
+            if (newAvatarPath != null) 'picture': newAvatarPath,
           },
         ),
       );
@@ -692,7 +747,10 @@ void didChangeAppLifecycleState(AppLifecycleState state) {
 
         blogs = blogs.map((blog) {
           if (blog.userId == currentUserId) {
-            return blog.copyWith(username: name);
+            return blog.copyWith(
+              username: name,
+              authorAvatarUrl: displayAvatarUrl ?? blog.authorAvatarUrl,
+            );
           }
           return blog;
         }).toList();
@@ -727,5 +785,11 @@ void didChangeAppLifecycleState(AppLifecycleState state) {
     } finally {
       if (mounted) setState(() => loading = false);
     }
+  }
+
+  String? _toPublicBlogImageUrl(String? rawValue) {
+    if (rawValue == null || rawValue.isEmpty) return null;
+    if (rawValue.startsWith('http')) return rawValue;
+    return Supabase.instance.client.storage.from('blog-images').getPublicUrl(rawValue);
   }
 }

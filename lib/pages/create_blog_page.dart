@@ -17,9 +17,11 @@ class CreateBlogPage extends StatefulWidget {
 class _CreateBlogPageState extends State<CreateBlogPage> {
   final titleController = TextEditingController();
   final contentController = TextEditingController();
-  XFile? pickedImage;
-  Uint8List? webImageBytes;
+  final List<XFile> pickedImages = [];
+  final List<Uint8List> webImageBytes = [];
   bool loading = false;
+  static const int maxImageBytes = 15 * 1024 * 1024;
+  static const int maxImagesCount = 10;
 
   final SupabaseService service = SupabaseService();
   final StorageService storage = StorageService();
@@ -28,19 +30,70 @@ class _CreateBlogPageState extends State<CreateBlogPage> {
   static const Color colorGrey = Color(0xFF757575);
   static const Color colorDirtyWhite = Color(0xFFF5F5F5);
 
-  void pickImage() async {
-    final image = await ImagePicker().pickImage(source: ImageSource.gallery, imageQuality: 80);
-    if (image != null) {
+  Future<void> pickImages() async {
+    final selected = await ImagePicker().pickMultiImage(imageQuality: 80);
+    if (selected.isEmpty) return;
+
+    final remainingSlots = maxImagesCount - pickedImages.length;
+    final imagesToAdd = selected.take(remainingSlots).toList();
+
+    if (remainingSlots <= 0) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Maximum 10 images allowed'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
+    final validImages = <XFile>[];
+    final validBytes = <Uint8List>[];
+    for (final image in imagesToAdd) {
+      final imageSize = await image.length();
+      if (imageSize > maxImageBytes) {
+        continue;
+      }
+      validImages.add(image);
       if (kIsWeb) {
-        final bytes = await image.readAsBytes();
-        setState(() {
-          pickedImage = image;
-          webImageBytes = bytes;
-        });
-      } else {
-        setState(() => pickedImage = image);
+        validBytes.add(await image.readAsBytes());
       }
     }
+
+    if (!mounted) return;
+    setState(() {
+      pickedImages.addAll(validImages);
+      if (kIsWeb) {
+        webImageBytes.addAll(validBytes);
+      }
+    });
+
+    if (selected.length > remainingSlots) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Only 10 images can be selected'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+    }
+    if (validImages.length < imagesToAdd.length) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Some images were skipped (over 15 MB)'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+    }
+  }
+
+  void removeImageAt(int index) {
+    setState(() {
+      pickedImages.removeAt(index);
+      if (kIsWeb && index < webImageBytes.length) {
+        webImageBytes.removeAt(index);
+      }
+    });
   }
 
   Future<void> submit() async {
@@ -57,35 +110,31 @@ class _CreateBlogPageState extends State<CreateBlogPage> {
     setState(() => loading = true);
 
     try {
-      String? imageUrl;
-
-      if (pickedImage != null) {
-        if (kIsWeb) {
-          imageUrl = await storage.uploadImage(
-            webImageBytes!,
-            'blog-${DateTime.now().millisecondsSinceEpoch}.png',
-          );
-        } else {
-          imageUrl = await storage.uploadImage(
-            File(pickedImage!.path),
-            'blog-${DateTime.now().millisecondsSinceEpoch}.png',
-          );
+      final imageUrls = <String>[];
+      for (int i = 0; i < pickedImages.length; i++) {
+        final fileName = 'blog-${DateTime.now().millisecondsSinceEpoch}-$i.png';
+        final uploadedUrl = kIsWeb
+            ? await storage.uploadImage(webImageBytes[i], fileName)
+            : await storage.uploadImage(File(pickedImages[i].path), fileName);
+        if (uploadedUrl != null && uploadedUrl.isNotEmpty) {
+          imageUrls.add(uploadedUrl);
         }
       }
 
       final user = Supabase.instance.client.auth.currentUser;
       if (user == null) throw 'User not logged in';
 
-      final displayName = user.userMetadata?['display_name'] as String? ?? 
-                          user.userMetadata?['full_name'] as String? ?? 
-                          'Anonymous';
+      final displayName =
+          user.userMetadata?['display_name'] as String? ??
+          user.userMetadata?['full_name'] as String? ??
+          'Anonymous';
 
       final newBlog = await service.createBlog(
         titleController.text,
         contentController.text,
         user.id,
         username: displayName,
-        imageUrl: imageUrl,
+        imageUrls: imageUrls,
       );
 
       if (!mounted) return;
@@ -98,6 +147,37 @@ class _CreateBlogPageState extends State<CreateBlogPage> {
     } finally {
       if (mounted) setState(() => loading = false);
     }
+  }
+
+  Widget _buildHeaderPreview() {
+    if (pickedImages.isEmpty) {
+      return Container(
+        color: colorDirtyWhite,
+        child: const Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.add_photo_alternate_outlined, size: 40, color: colorGrey),
+              SizedBox(height: 12),
+              Text(
+                'Add cover images',
+                style: TextStyle(color: colorGrey, fontWeight: FontWeight.w500),
+              ),
+              SizedBox(height: 6),
+              Text(
+                'Up to 10 images, each max 15 MB',
+                style: TextStyle(color: colorGrey, fontSize: 12),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    if (kIsWeb && webImageBytes.isNotEmpty) {
+      return Image.memory(webImageBytes.first, fit: BoxFit.cover);
+    }
+    return Image.file(File(pickedImages.first.path), fit: BoxFit.cover);
   }
 
   @override
@@ -139,8 +219,15 @@ class _CreateBlogPageState extends State<CreateBlogPage> {
                 padding: const EdgeInsets.symmetric(horizontal: 20),
               ),
               child: loading
-                  ? const SizedBox(height: 15, width: 15, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-                  : const Text('Publish', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                  ? const SizedBox(
+                      height: 15,
+                      width: 15,
+                      child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
+                    )
+                  : const Text(
+                      'Publish',
+                      style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                    ),
             ),
           ),
         ],
@@ -151,43 +238,90 @@ class _CreateBlogPageState extends State<CreateBlogPage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const SizedBox(height: 20),
-
             GestureDetector(
-              onTap: pickImage,
+              onTap: pickImages,
               child: Container(
                 width: double.infinity,
                 height: 200,
                 decoration: BoxDecoration(
                   color: colorDirtyWhite,
                   borderRadius: BorderRadius.circular(16),
-                  border: pickedImage == null ? Border.all(color: Colors.grey.shade300, style: BorderStyle.solid) : null,
+                  border: pickedImages.isEmpty
+                      ? Border.all(color: Colors.grey.shade300, style: BorderStyle.solid)
+                      : null,
                 ),
-                child: pickedImage != null
-                    ? ClipRRect(
-                        borderRadius: BorderRadius.circular(16),
-                        child: Stack(
-                          fit: StackFit.expand,
-                          children: [
-                            kIsWeb 
-                              ? Image.memory(webImageBytes!, fit: BoxFit.cover) 
-                              : Image.file(File(pickedImage!.path), fit: BoxFit.cover),
-                            Container(color: Colors.black12),
-                            const Center(child: Icon(Icons.sync, color: Colors.white, size: 30)),
-                          ],
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(16),
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      _buildHeaderPreview(),
+                      if (pickedImages.isNotEmpty) ...[
+                        Container(color: Colors.black26),
+                        Positioned(
+                          left: 12,
+                          bottom: 12,
+                          child: Text(
+                            '${pickedImages.length} image(s) selected',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
                         ),
-                      )
-                    : Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: const [
-                          Icon(Icons.add_photo_alternate_outlined, size: 40, color: colorGrey),
-                          SizedBox(height: 12),
-                          Text('Add a cover photo', style: TextStyle(color: colorGrey, fontWeight: FontWeight.w500)),
-                        ],
-                      ),
+                      ],
+                    ],
+                  ),
+                ),
               ),
             ),
+            const SizedBox(height: 8),
+            const Text(
+              'Image preview (up to 10 images, max 15 MB each)',
+              style: TextStyle(color: colorGrey, fontSize: 12),
+            ),
+            if (pickedImages.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              SizedBox(
+                height: 92,
+                child: ListView.builder(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: pickedImages.length,
+                  itemBuilder: (context, index) {
+                    return Padding(
+                      padding: const EdgeInsets.only(right: 10),
+                      child: Stack(
+                        children: [
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(10),
+                            child: SizedBox(
+                              width: 92,
+                              height: 92,
+                              child: kIsWeb
+                                  ? Image.memory(webImageBytes[index], fit: BoxFit.cover)
+                                  : Image.file(File(pickedImages[index].path), fit: BoxFit.cover),
+                            ),
+                          ),
+                          Positioned(
+                            top: 4,
+                            right: 4,
+                            child: GestureDetector(
+                              onTap: () => removeImageAt(index),
+                              child: const CircleAvatar(
+                                radius: 11,
+                                backgroundColor: Colors.black54,
+                                child: Icon(Icons.close, size: 13, color: Colors.white),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
             const SizedBox(height: 32),
-
             TextField(
               controller: titleController,
               style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w800, color: colorBlack),
@@ -199,7 +333,6 @@ class _CreateBlogPageState extends State<CreateBlogPage> {
               ),
             ),
             const Divider(height: 40, thickness: 1),
-
             TextField(
               controller: contentController,
               maxLines: null,
@@ -214,6 +347,13 @@ class _CreateBlogPageState extends State<CreateBlogPage> {
             const SizedBox(height: 100),
           ],
         ),
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: pickedImages.length >= maxImagesCount ? null : pickImages,
+        backgroundColor: colorBlack,
+        foregroundColor: Colors.white,
+        icon: const Icon(Icons.add_photo_alternate_outlined),
+        label: const Text('Add Images'),
       ),
     );
   }

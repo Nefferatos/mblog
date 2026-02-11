@@ -3,6 +3,7 @@ import '../models/blog.dart';
 import '../models/comment.dart';
 import '../models/like.dart';
 import 'dart:typed_data';
+import 'dart:convert';
 import 'package:flutter/foundation.dart';
 
 class SupabaseService {
@@ -22,14 +23,23 @@ class SupabaseService {
     return (data as List).map((e) => Blog.fromMap(e)).toList();
   }
 
-Future<Blog> createBlog(String title, String content, String userId,
-    {String? username, String? imageUrl}) async {
+Future<Blog> createBlog(
+  String title,
+  String content,
+  String userId, {
+  String? username,
+  String? imageUrl,
+  List<String>? imageUrls,
+}) async {
+  final resolvedImageUrls = imageUrls ?? const [];
   final response = await Supabase.instance.client.from('blogs').insert({
     'title': title,
     'content': content,
     'user_id': userId,
     'username': username, 
-    'image_url': imageUrl,
+    'image_url': resolvedImageUrls.isNotEmpty
+        ? jsonEncode(resolvedImageUrls)
+        : imageUrl,
     'created_at': DateTime.now().toIso8601String(),
   }).select().single();
 
@@ -42,15 +52,22 @@ Future<Blog> createBlog(String title, String content, String userId,
     String? title,
     String? content,
     String? imageUrl,
+    List<String>? imageUrls,
   }) async {
     try {
+      final updates = <String, dynamic>{};
+      if (title != null) updates['title'] = title;
+      if (content != null) updates['content'] = content;
+      if (imageUrls != null) {
+        updates['image_url'] = imageUrls.isNotEmpty ? jsonEncode(imageUrls) : null;
+      } else if (imageUrl != null) {
+        updates['image_url'] = imageUrl;
+      }
+      if (updates.isEmpty) return true;
+
       await client
           .from('blogs')
-          .update({
-            'title': ?title,
-            'content': ?content,
-            'image_url': ?imageUrl,
-          })
+          .update(updates)
           .eq('id', id);
       return true;
     } catch (e) {
@@ -70,12 +87,22 @@ Future<Blog> createBlog(String title, String content, String userId,
   }
 
   Future<List<Comment>> getComments(int blogId) async {
-    final data = await client
-        .from('comments')
-        .select()
-        .eq('blog_id', blogId)
-        .order('created_at', ascending: true);
-    return (data as List).map((e) => Comment.fromMap(e)).toList();
+    try {
+      final data = await client
+          .from('comments')
+          .select('*, profiles:user_id(avatar_url)')
+          .eq('blog_id', blogId)
+          .order('created_at', ascending: true);
+      return (data as List).map((e) => Comment.fromMap(e)).toList();
+    } catch (e) {
+      debugPrint('Comments join query failed, using fallback: $e');
+      final data = await client
+          .from('comments')
+          .select('*')
+          .eq('blog_id', blogId)
+          .order('created_at', ascending: true);
+      return (data as List).map((e) => Comment.fromMap(e)).toList();
+    }
   }
 
 Future<Comment?> addComment(
@@ -222,33 +249,30 @@ Future<List<Blog>> getBlogsByUser(String userId) async {
 
   Future<Blog?> toggleLike(Blog blog, String userId) async {
     try {
-
       final existing = await client
           .from('likes')
-          .select()
+          .select('id')
           .eq('blog_id', blog.id)
           .eq('user_id', userId)
+          .limit(1)
           .maybeSingle();
 
       if (existing != null) {
-
         await client
             .from('likes')
             .delete()
             .eq('blog_id', blog.id)
             .eq('user_id', userId);
       } else {
-
         await client.from('likes').insert({
           'blog_id': blog.id,
           'user_id': userId,
         });
       }
 
-
       final likesData = await client
           .from('likes')
-          .select()
+          .select('user_id')
           .eq('blog_id', blog.id);
 
       final likesList = likesData as List;

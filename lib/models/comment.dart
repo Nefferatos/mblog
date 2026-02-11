@@ -20,20 +20,28 @@ class Comment {
   });
 
 factory Comment.fromMap(Map<String, dynamic> map) {
-  // Get the raw avatar path from the joined profile, if present
   String? rawAvatarPath;
-  if (map['profiles'] != null && map['profiles']['avatar_url'] != null) {
-    rawAvatarPath = map['profiles']['avatar_url'] as String;
+  final profile = map['profiles'];
+  Map<String, dynamic>? profileMap;
+  if (profile is Map<String, dynamic>) {
+    profileMap = profile;
+  } else if (profile is List && profile.isNotEmpty && profile.first is Map<String, dynamic>) {
+    profileMap = profile.first as Map<String, dynamic>;
+  }
+
+  if (profileMap != null && profileMap['avatar_url'] != null) {
+    rawAvatarPath = profileMap['avatar_url'] as String?;
   } else if (map['avatar_url'] != null) {
-    // fallback if your DB stores avatarUrl directly
     rawAvatarPath = map['avatar_url'] as String?;
   }
+
+  final rawUserName = map['user_name'] ?? map['username'] ?? map['display_name'];
 
   return Comment(
     id: map['id'] as int,
     blogId: map['blog_id'] as int,
     userId: map['user_id'] as String,
-    userName: map['user_name'] ?? "Anonymous",
+    userName: rawUserName?.toString() ?? "Anonymous",
     content: map['content'] ?? "",
     imageUrl: map['image_url'] as String?,
     avatarUrl: rawAvatarPath,
@@ -51,6 +59,7 @@ factory Comment.fromMap(Map<String, dynamic> map) {
     String? userName,
     String? content,
     String? imageUrl,
+    String? avatarUrl,
     DateTime? createdAt,
   }) {
     return Comment(
@@ -60,6 +69,7 @@ factory Comment.fromMap(Map<String, dynamic> map) {
       userName: userName ?? this.userName,
       content: content ?? this.content,
       imageUrl: imageUrl ?? this.imageUrl,
+      avatarUrl: avatarUrl ?? this.avatarUrl,
       createdAt: createdAt ?? this.createdAt,
     );
   }
