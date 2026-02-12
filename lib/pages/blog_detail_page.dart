@@ -2,7 +2,9 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 import '../models/blog.dart';
 import '../models/comment.dart';
 import '../services/supabase_service.dart';
@@ -24,13 +26,15 @@ class _BlogDetailPageState extends State<BlogDetailPage> {
 
   List<Comment> comments = [];
   bool loading = true;
+  bool commentsLoading = false;
   String? userId;
   String usernameDisplay = "Anonymous";
   String? currentUserProfilePic; 
   final TextEditingController commentController = TextEditingController();
   final PageController _carouselController = PageController();
   
-  XFile? commentImage;
+  List<XFile> commentImages = [];
+  List<Uint8List> commentWebImageBytes = [];
   bool commentLoading = false;
   int? viewImageIndex;
   int _currentCarouselIndex = 0;
@@ -56,7 +60,7 @@ class _BlogDetailPageState extends State<BlogDetailPage> {
   void initState() {
     super.initState();
     loadUser();
-    fetchComments();
+    fetchComments(showPageLoader: true);
   }
 
   @override
@@ -92,8 +96,15 @@ class _BlogDetailPageState extends State<BlogDetailPage> {
     }
   }
 
-  Future<void> fetchComments() async {
-    setState(() => loading = true);
+  Future<void> fetchComments({bool showPageLoader = false}) async {
+    if (!mounted) return;
+    setState(() {
+      if (showPageLoader) {
+        loading = true;
+      } else {
+        commentsLoading = true;
+      }
+    });
     try {
       final data = await service.getComments(widget.blog.id);
       final profilesByUserId = await _fetchCommentProfiles(
@@ -114,17 +125,30 @@ class _BlogDetailPageState extends State<BlogDetailPage> {
               : c.avatarUrl,
         );
 
-        if (nextComment.imageUrl != null && !nextComment.imageUrl!.startsWith("http")) {
-          final signedUrl = await Supabase.instance.client.storage
-              .from('comment-images')
-              .createSignedUrl(nextComment.imageUrl!, 3600);
-          nextComment = nextComment.copyWith(imageUrl: signedUrl);
-        }
+        final signedImageUrls = await Future.wait(
+          nextComment.imageUrls.map((img) async {
+            if (img.startsWith("http")) return img;
+            return Supabase.instance.client.storage
+                .from('comment-images')
+                .createSignedUrl(img, 3600);
+          }),
+        );
+        nextComment = nextComment.copyWith(imageUrls: signedImageUrls);
         return nextComment;
       }));
       if (!mounted) return;
-      setState(() { comments = resolvedComments; loading = false; });
-    } catch (e) { setState(() => loading = false); }
+      setState(() {
+        comments = resolvedComments;
+        loading = false;
+        commentsLoading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        loading = false;
+        commentsLoading = false;
+      });
+    }
   }
 
   Future<Map<String, Map<String, String?>>> _fetchCommentProfiles(
@@ -153,34 +177,114 @@ class _BlogDetailPageState extends State<BlogDetailPage> {
     }
   }
 
-  Future<void> handleSaveOrUpdate({Comment? existingComment, String? updatedText, XFile? newImage}) async {
+  Future<void> handleSaveOrUpdate({
+    Comment? existingComment,
+    String? updatedText,
+    List<XFile>? newImages,
+    List<String>? retainedExistingImageUrls,
+  }) async {
     if (userId == null) return;
     final textToSave = (updatedText ?? commentController.text).trim();
     setState(() => commentLoading = true);
     try {
-      String? imageUrl = existingComment?.imageUrl;
-      final imageToUpload = newImage ?? (existingComment == null ? commentImage : null);
-      if (imageToUpload != null) {
-        final fileName = 'comment-${DateTime.now().millisecondsSinceEpoch}.png';
-        await Supabase.instance.client.storage.from('comment-images').uploadBinary(fileName, await imageToUpload.readAsBytes());
-        imageUrl = fileName;
+      var finalImagePaths = _normalizeCommentImagePaths(
+        existingComment?.imageUrls ?? const [],
+      );
+      if (existingComment != null && retainedExistingImageUrls != null) {
+        finalImagePaths = _normalizeCommentImagePaths(retainedExistingImageUrls);
       }
+      final imagesToUpload =
+          newImages ?? (existingComment == null ? commentImages : const <XFile>[]);
+
+      if (imagesToUpload.isNotEmpty) {
+        final uploadedPaths = <String>[];
+        for (var i = 0; i < imagesToUpload.length; i++) {
+          final image = imagesToUpload[i];
+          final ext = _extensionFromName(image.name);
+          final mimeType = _resolveMimeType(image, ext);
+          final fileName = 'comment-${DateTime.now().millisecondsSinceEpoch}-$i.$ext';
+          await Supabase.instance.client.storage
+              .from('comment-images')
+              .uploadBinary(
+                fileName,
+                await image.readAsBytes(),
+                fileOptions: FileOptions(contentType: mimeType),
+              );
+          uploadedPaths.add(fileName);
+        }
+        finalImagePaths = [...finalImagePaths, ...uploadedPaths];
+      } else if (existingComment != null && newImages != null && newImages.isEmpty) {
+        // Explicit clear from edit mode.
+        finalImagePaths = [];
+      }
+
+      final encodedImageField = _encodeCommentImages(finalImagePaths);
+
       if (existingComment != null) {
-        await service.updateComment(existingComment.id, textToSave, imageUrl);
+        final ok = await service.updateComment(
+          existingComment.id,
+          textToSave,
+          encodedImageField,
+        );
+        if (!ok) throw Exception('Failed to update comment');
+        if (!mounted) return;
+        setState(() {
+          comments = comments
+              .map(
+                (c) => c.id == existingComment.id
+                    ? c.copyWith(
+                        content: textToSave,
+                        imageUrls: finalImagePaths,
+                        updatedAt: DateTime.now(),
+                      )
+                    : c,
+              )
+              .toList();
+        });
       } else {
-        await service.addComment(widget.blog.id, textToSave, imageUrl, usernameDisplay);
+        final created = await service.addComment(
+          widget.blog.id,
+          textToSave,
+          encodedImageField,
+          usernameDisplay,
+        );
+        if (created != null && mounted) {
+          setState(() {
+            comments = [
+              ...comments,
+              created.copyWith(
+                userName: created.userName.isNotEmpty
+                    ? created.userName
+                    : usernameDisplay,
+                avatarUrl: currentUserProfilePic,
+                imageUrls: finalImagePaths,
+              ),
+            ];
+          });
+        } else {
+          await fetchComments();
+        }
       }
       commentController.clear();
-      setState(() => commentImage = null);
-      fetchComments();
+      setState(() {
+        commentImages = [];
+        commentWebImageBytes = [];
+      });
     } finally { setState(() => commentLoading = false); }
   }
 
   Future<void> deleteComment(Comment c) async {
     try {
-      if (c.imageUrl != null) {
-        final fileName = c.imageUrl!.split('/').last.split('?')[0];
-        await Supabase.instance.client.storage.from('comment-images').remove([fileName]);
+      if (c.imageUrls.isNotEmpty) {
+        final fileNames = c.imageUrls
+            .map((url) => url.split('/').last.split('?').first)
+            .where((name) => name.isNotEmpty)
+            .toList();
+        if (fileNames.isNotEmpty) {
+          await Supabase.instance.client.storage
+              .from('comment-images')
+              .remove(fileNames);
+        }
       }
       await service.deleteComment(c.id);
       setState(() => comments.removeWhere((element) => element.id == c.id));
@@ -275,7 +379,22 @@ class _BlogDetailPageState extends State<BlogDetailPage> {
               controller: _carouselController,
               onPageChanged: (i) => setState(() => _currentCarouselIndex = i),
               itemCount: _blogImages.length,
-              itemBuilder: (context, index) => Image.network(_blogImages[index], fit: BoxFit.cover),
+              itemBuilder: (context, index) => Image.network(
+                _blogImages[index],
+                fit: BoxFit.cover,
+                loadingBuilder: (context, child, progress) {
+                  if (progress == null) return child;
+                  return const Center(
+                    child: CircularProgressIndicator(strokeWidth: 2, color: colorBlack),
+                  );
+                },
+                errorBuilder: (context, error, stackTrace) => Container(
+                  color: colorDirtyWhite,
+                  child: const Center(
+                    child: Icon(Icons.broken_image, color: colorGrey),
+                  ),
+                ),
+              ),
             ),
             // Carousel Buttons
             if (_blogImages.length > 1) ...[
@@ -325,7 +444,17 @@ class _BlogDetailPageState extends State<BlogDetailPage> {
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(12),
                 border: Border.all(color: isSelected ? colorBlack : Colors.transparent, width: 2),
-                image: DecorationImage(image: NetworkImage(_blogImages[index]), fit: BoxFit.cover),
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: Image.network(
+                  _blogImages[index],
+                  fit: BoxFit.cover,
+                  errorBuilder: (context, error, stackTrace) => Container(
+                    color: colorDirtyWhite,
+                    child: const Icon(Icons.broken_image, color: colorGrey, size: 18),
+                  ),
+                ),
               ),
             ),
           );
@@ -358,6 +487,18 @@ class _BlogDetailPageState extends State<BlogDetailPage> {
   }
 
   Widget _buildCommentsList() {
+    if (commentsLoading) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(vertical: 20),
+        child: Center(
+          child: SizedBox(
+            height: 22,
+            width: 22,
+            child: CircularProgressIndicator(strokeWidth: 2, color: colorBlack),
+          ),
+        ),
+      );
+    }
     if (comments.isEmpty) return const Center(child: Text("No comments yet.", style: TextStyle(color: colorGrey)));
     return ListView.builder(
       shrinkWrap: true,
@@ -369,7 +510,12 @@ class _BlogDetailPageState extends State<BlogDetailPage> {
           comment: comments[index],
           currentUserId: userId ?? "",
           onDelete: () => deleteComment(comments[index]),
-          onUpdate: (txt, img) => handleSaveOrUpdate(existingComment: comments[index], updatedText: txt, newImage: img),
+          onUpdate: (txt, imgs, retainedUrls) => handleSaveOrUpdate(
+            existingComment: comments[index],
+            updatedText: txt,
+            newImages: imgs,
+            retainedExistingImageUrls: retainedUrls,
+          ),
         ),
       ),
     );
@@ -382,10 +528,13 @@ class _BlogDetailPageState extends State<BlogDetailPage> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (commentImage != null) _buildImagePreview(),
+          if (commentImages.isNotEmpty) _buildImagePreview(),
           Row(
             children: [
-              IconButton(icon: const Icon(Icons.add_photo_alternate_outlined), onPressed: pickCommentImage),
+              IconButton(
+                icon: const Icon(Icons.add_photo_alternate_outlined),
+                onPressed: pickCommentImages,
+              ),
               Expanded(
                 child: TextField(
                   controller: commentController,
@@ -417,11 +566,51 @@ class _BlogDetailPageState extends State<BlogDetailPage> {
       height: 80,
       margin: const EdgeInsets.only(bottom: 10),
       alignment: Alignment.centerLeft,
-      child: Stack(
-        children: [
-          ClipRRect(borderRadius: BorderRadius.circular(15), child: Image.file(File(commentImage!.path), height: 80, width: 80, fit: BoxFit.cover)),
-          Positioned(right: 0, child: GestureDetector(onTap: () => setState(() => commentImage = null), child: const CircleAvatar(radius: 12, backgroundColor: colorBlack, child: Icon(Icons.close, size: 14, color: Colors.white)))),
-        ],
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        itemCount: commentImages.length + 1,
+        separatorBuilder: (_, __) => const SizedBox(width: 8),
+        itemBuilder: (context, index) {
+          if (index == commentImages.length) {
+            return _buildAddImageTile(
+              onTap: pickCommentImages,
+            );
+          }
+          final imageIndex = index;
+          return Stack(
+            children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(15),
+                child: _buildPickedImage(
+                  commentImages[imageIndex],
+                  webBytes: (imageIndex < commentWebImageBytes.length)
+                      ? commentWebImageBytes[imageIndex]
+                      : null,
+                  height: 80,
+                  width: 80,
+                ),
+              ),
+              Positioned(
+                right: 0,
+                child: GestureDetector(
+                  onTap: () {
+                    setState(() {
+                      commentImages.removeAt(imageIndex);
+                      if (kIsWeb && imageIndex < commentWebImageBytes.length) {
+                        commentWebImageBytes.removeAt(imageIndex);
+                      }
+                    });
+                  },
+                  child: const CircleAvatar(
+                    radius: 12,
+                    backgroundColor: colorBlack,
+                    child: Icon(Icons.close, size: 14, color: Colors.white),
+                  ),
+                ),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
@@ -434,15 +623,148 @@ class _BlogDetailPageState extends State<BlogDetailPage> {
         child: PageView.builder(
           controller: PageController(initialPage: viewImageIndex!),
           itemCount: _blogImages.length,
-          itemBuilder: (context, index) => InteractiveViewer(child: Image.network(_blogImages[index])),
+          itemBuilder: (context, index) => InteractiveViewer(
+            child: Image.network(
+              _blogImages[index],
+              errorBuilder: (context, error, stackTrace) => const Center(
+                child: Icon(Icons.broken_image, color: Colors.white70, size: 40),
+              ),
+            ),
+          ),
         ),
       ),
     );
   }
 
-  Future<void> pickCommentImage() async {
-    final image = await ImagePicker().pickImage(source: ImageSource.gallery, imageQuality: 70);
-    if (image != null) setState(() => commentImage = image);
+  Future<void> pickCommentImages() async {
+    final images = await ImagePicker().pickMultiImage(imageQuality: 70);
+    if (images.isEmpty) return;
+    if (kIsWeb) {
+      final bytes = await Future.wait(images.map((e) => e.readAsBytes()));
+      if (!mounted) return;
+      setState(() {
+        commentImages.addAll(images);
+        commentWebImageBytes.addAll(bytes);
+      });
+      return;
+    }
+    if (!mounted) return;
+    setState(() => commentImages.addAll(images));
+  }
+
+  Widget _buildPickedImage(
+    XFile image, {
+    Uint8List? webBytes,
+    double? height,
+    double? width,
+  }) {
+    if (kIsWeb) {
+      if (webBytes != null) {
+        return Image.memory(webBytes, height: height, width: width, fit: BoxFit.contain);
+      }
+      return FutureBuilder<Uint8List>(
+        future: image.readAsBytes(),
+        builder: (context, snapshot) {
+          if (snapshot.hasData) {
+            return Image.memory(
+              snapshot.data!,
+              height: height,
+              width: width,
+              fit: BoxFit.contain,
+            );
+          }
+          return Container(
+            height: height,
+            width: width,
+            color: colorDirtyWhite,
+            child: const Center(
+              child: SizedBox(
+                height: 16,
+                width: 16,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            ),
+          );
+        },
+      );
+    }
+    return Image.file(
+      File(image.path),
+      height: height,
+      width: width,
+      fit: BoxFit.contain,
+    );
+  }
+
+  Widget _buildAddImageTile({required VoidCallback onTap}) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: 80,
+        height: 80,
+        decoration: BoxDecoration(
+          color: colorDirtyWhite,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: colorGrey.withOpacity(0.35)),
+        ),
+        child: const Icon(Icons.add, color: colorGrey),
+      ),
+    );
+  }
+
+  String? _encodeCommentImages(List<String> imagePaths) {
+    if (imagePaths.isEmpty) return null;
+    if (imagePaths.length == 1) return imagePaths.first;
+    return jsonEncode(imagePaths);
+  }
+
+  List<String> _normalizeCommentImagePaths(List<String> values) {
+    return values
+        .map((value) {
+          if (!value.startsWith('http')) return value;
+          return value.split('/').last.split('?').first;
+        })
+        .where((value) => value.isNotEmpty)
+        .toList();
+  }
+
+  String _resolveMimeType(XFile file, String ext) {
+    final fromPicker = file.mimeType?.trim();
+    if (fromPicker != null && fromPicker.isNotEmpty) {
+      return fromPicker;
+    }
+    return _mimeTypeFromExtension(ext);
+  }
+
+  String _extensionFromName(String? name) {
+    if (name == null || !name.contains('.')) return 'jpg';
+    final ext = name.split('.').last.toLowerCase().trim();
+    if (ext.isEmpty || ext.length > 8) return 'jpg';
+    return ext;
+  }
+
+  String _mimeTypeFromExtension(String ext) {
+    switch (ext) {
+      case 'jpg':
+      case 'jpeg':
+        return 'image/jpeg';
+      case 'png':
+        return 'image/png';
+      case 'webp':
+        return 'image/webp';
+      case 'gif':
+        return 'image/gif';
+      case 'bmp':
+        return 'image/bmp';
+      case 'heic':
+        return 'image/heic';
+      case 'heif':
+        return 'image/heif';
+      case 'avif':
+        return 'image/avif';
+      default:
+        return 'application/octet-stream';
+    }
   }
 
   String? _toPublicBlogImageUrl(String? rawValue) {
@@ -450,4 +772,5 @@ class _BlogDetailPageState extends State<BlogDetailPage> {
     if (rawValue.startsWith('http')) return rawValue;
     return Supabase.instance.client.storage.from('blog-images').getPublicUrl(rawValue);
   }
+
 }

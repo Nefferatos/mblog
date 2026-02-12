@@ -32,11 +32,14 @@ class _ProfilePageState extends State<ProfilePage> with WidgetsBindingObserver {
 
   List<Blog> blogs = [];
   bool loading = true;
+  bool postsLoading = false;
+  bool profileUpdating = false;
   bool isCurrentUser = false;
 
   int currentPage = 0;
   final int pageSize = 4;
   bool isAscending = false;
+  final ScrollController _postsScrollController = ScrollController();
 
   static const Color colorBlack = Color(0xFF1A1A1A);
   static const Color colorGrey = Color(0xFF757575);
@@ -49,12 +52,13 @@ void initState() {
   WidgetsBinding.instance.addObserver(this); 
   checkOwnership();
   loadProfileHeader();
-  fetchUserBlogs();
+  fetchUserBlogs(showPageLoader: true);
 }
 
 @override
 void dispose() {
   WidgetsBinding.instance.removeObserver(this);
+  _postsScrollController.dispose();
   super.dispose();
 }
 
@@ -152,8 +156,15 @@ void didChangeAppLifecycleState(AppLifecycleState state) {
     }
   }
 
-  Future<void> fetchUserBlogs() async {
-    setState(() => loading = true);
+  Future<void> fetchUserBlogs({bool showPageLoader = false}) async {
+    if (!mounted) return;
+    setState(() {
+      if (showPageLoader || blogs.isEmpty) {
+        loading = true;
+      } else {
+        postsLoading = true;
+      }
+    });
     try {
       final from = currentPage * pageSize;
       final to = from + pageSize - 1;
@@ -203,11 +214,15 @@ void didChangeAppLifecycleState(AppLifecycleState state) {
       setState(() {
         blogs = fetchedBlogs;
         loading = false;
+        postsLoading = false;
       });
     } catch (e) {
       debugPrint('Fetch blogs error: $e');
       if (!mounted) return;
-      setState(() => loading = false);
+      setState(() {
+        loading = false;
+        postsLoading = false;
+      });
     }
   }
 
@@ -242,9 +257,55 @@ void didChangeAppLifecycleState(AppLifecycleState state) {
     }
   }
 
-  void _changePage(int delta) {
+  Future<void> _changePage(int delta) async {
     setState(() => currentPage += delta);
-    fetchUserBlogs();
+    await fetchUserBlogs();
+    _scrollPostsToTop();
+  }
+
+  Future<void> _goToFirstPage() async {
+    if (currentPage == 0) return;
+    setState(() => currentPage = 0);
+    await fetchUserBlogs();
+    _scrollPostsToTop();
+  }
+
+  Future<void> _goToLastPage() async {
+    if (loading) return;
+    var probePage = currentPage;
+    try {
+      while (true) {
+        final from = (probePage + 1) * pageSize;
+        final to = from + pageSize - 1;
+
+        final rows = await Supabase.instance.client
+            .from('blogs')
+            .select('id')
+            .eq('user_id', widget.userId)
+            .order('created_at', ascending: isAscending)
+            .range(from, to) as List<dynamic>;
+
+        if (rows.isEmpty) break;
+        probePage += 1;
+        if (rows.length < pageSize) break;
+      }
+
+      if (!mounted || probePage == currentPage) return;
+      setState(() => currentPage = probePage);
+      await fetchUserBlogs();
+      _scrollPostsToTop();
+    } catch (e) {
+      debugPrint('Error jumping to last profile page: $e');
+    }
+  }
+
+  void _scrollPostsToTop() {
+    if (!_postsScrollController.hasClients) return;
+    _postsScrollController.animateTo(
+      0,
+      duration: const Duration(milliseconds: 280),
+      curve: Curves.easeOut,
+    );
   }
 
   void _toggleSort(bool ascending) {
@@ -258,8 +319,17 @@ void didChangeAppLifecycleState(AppLifecycleState state) {
 
   Future<void> _toggleLike(Blog blog) async {
     if (currentUserId == null) return;
-    await service.toggleLike(blog, currentUserId!);
-    fetchUserBlogs();
+    final updated = await service.toggleLike(blog, currentUserId!);
+    if (!mounted || updated == null) return;
+    setState(() {
+      final index = blogs.indexWhere((b) => b.id == blog.id);
+      if (index != -1) {
+        blogs[index] = blogs[index].copyWith(
+          likesCount: updated.likesCount,
+          isLiked: updated.isLiked,
+        );
+      }
+    });
   }
 
   Future<void> _handleDelete(Blog blog) async {
@@ -329,58 +399,84 @@ void didChangeAppLifecycleState(AppLifecycleState state) {
         },
         child: loading
             ? const Center(child: CircularProgressIndicator(color: colorBlack))
-            : ListView.builder(
-                padding: EdgeInsets.zero,
-                physics: const AlwaysScrollableScrollPhysics(),
-                itemCount: blogs.length + 2,
-                itemBuilder: (context, index) {
-                  if (index == 0) return _buildHeader();
-                  if (index == blogs.length + 1) {
-                    return _buildPaginationControls();
-                  }
+            : Stack(
+                children: [
+                  ListView.builder(
+                    controller: _postsScrollController,
+                    padding: EdgeInsets.zero,
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    itemCount: blogs.length + 2,
+                    itemBuilder: (context, index) {
+                      if (index == 0) return _buildHeader();
+                      if (index == blogs.length + 1) {
+                        return _buildPaginationControls();
+                      }
 
-                  final blog = blogs[index - 1];
-                  return BlogCard(
-                    blog: blog,
-                    currentUserId: currentUserId,
-                    onTap: () async {
-                      await Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => BlogDetailPage(blog: blog),
-                        ),
-                      );
-                      fetchUserBlogs();
-                      loadProfileHeader(forceRefresh: true);
-                    },
-                    onEdit: isCurrentUser
-                        ? () async {
-                            final updated = await Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (_) => UpdateBlogPage(blog: blog),
-                              ),
-                            );
+                      final blog = blogs[index - 1];
+                      return BlogCard(
+                        blog: blog,
+                        currentUserId: currentUserId,
+                        onTap: () async {
+                          await Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => BlogDetailPage(blog: blog),
+                            ),
+                          );
+                          fetchUserBlogs();
+                          loadProfileHeader(forceRefresh: true);
+                        },
+                        onEdit: isCurrentUser
+                            ? () async {
+                                final updated = await Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) => UpdateBlogPage(blog: blog),
+                                  ),
+                                );
 
-                            if (updated == true) {
-                              fetchUserBlogs();
-                              loadProfileHeader(forceRefresh: true);
-                            }
-                          }
-                        : null,
-                    onDelete: isCurrentUser ? () => _handleDelete(blog) : null,
-                    onLike: () => _toggleLike(blog),
-                    onComment: () async {
-                      await Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => BlogDetailPage(blog: blog),
-                        ),
+                                if (!mounted || updated == null) return;
+                                if (updated is Blog) {
+                                  setState(() {
+                                    final index = blogs.indexWhere(
+                                      (b) => b.id == updated.id,
+                                    );
+                                    if (index != -1) {
+                                      blogs[index] = blogs[index].copyWith(
+                                        title: updated.title,
+                                        content: updated.content,
+                                        imageUrls: updated.imageUrls,
+                                        updatedAt: updated.updatedAt,
+                                      );
+                                    }
+                                  });
+                                } else {
+                                  fetchUserBlogs();
+                                }
+                              }
+                            : null,
+                        onDelete: isCurrentUser ? () => _handleDelete(blog) : null,
+                        onLike: () => _toggleLike(blog),
+                        onComment: () async {
+                          await Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => BlogDetailPage(blog: blog),
+                            ),
+                          );
+                          fetchUserBlogs();
+                        },
                       );
-                      fetchUserBlogs();
                     },
-                  );
-                },
+                  ),
+                  if (postsLoading)
+                    const Positioned(
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      child: LinearProgressIndicator(color: colorBlack),
+                    ),
+                ],
               ),
       ),
     );
@@ -396,31 +492,50 @@ void didChangeAppLifecycleState(AppLifecycleState state) {
           child: Column(
             children: [
               ClipOval(
-                child: profileAvatarUrl != null
-                    ? Image.network(
-                        profileAvatarUrl!,
-                        key: ValueKey(profileAvatarUrl),
+                child: Stack(
+                  children: [
+                    profileAvatarUrl != null
+                        ? Image.network(
+                            profileAvatarUrl!,
+                            key: ValueKey(profileAvatarUrl),
+                            width: 100,
+                            height: 100,
+                            fit: BoxFit.cover,
+                            gaplessPlayback: true,
+                            loadingBuilder: (context, child, loadingProgress) {
+                              if (loadingProgress == null) return child;
+                              return const Center(
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              );
+                            },
+                          )
+                        : Container(
+                            width: 100,
+                            height: 100,
+                            color: colorDirtyWhite,
+                            child: const Icon(
+                              Icons.person,
+                              size: 50,
+                              color: colorGrey,
+                            ),
+                          ),
+                    if (profileUpdating)
+                      Container(
                         width: 100,
                         height: 100,
-                        fit: BoxFit.cover,
-                        gaplessPlayback: true,
-                        loadingBuilder: (context, child, loadingProgress) {
-                          if (loadingProgress == null) return child;
-                          return const Center(
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          );
-                        },
-                      )
-                    : Container(
-                        width: 100,
-                        height: 100,
-                        color: colorDirtyWhite,
-                        child: const Icon(
-                          Icons.person,
-                          size: 50,
-                          color: colorGrey,
+                        color: Colors.black26,
+                        alignment: Alignment.center,
+                        child: const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
                         ),
                       ),
+                  ],
+                ),
               ),
               const SizedBox(height: 16),
               Text(
@@ -536,6 +651,11 @@ void didChangeAppLifecycleState(AppLifecycleState state) {
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           _navButton(
+            Icons.first_page,
+            currentPage > 0 ? _goToFirstPage : null,
+          ),
+          const SizedBox(width: 6),
+          _navButton(
             Icons.chevron_left,
             currentPage > 0 ? () => _changePage(-1) : null,
           ),
@@ -552,6 +672,11 @@ void didChangeAppLifecycleState(AppLifecycleState state) {
           _navButton(
             Icons.chevron_right,
             hasNext ? () => _changePage(1) : null,
+          ),
+          const SizedBox(width: 6),
+          _navButton(
+            Icons.last_page,
+            hasNext ? _goToLastPage : null,
           ),
         ],
       ),
@@ -688,7 +813,7 @@ void didChangeAppLifecycleState(AppLifecycleState state) {
     Uint8List? bytes,
   ) async {
     if (currentUserId == null) return;
-    setState(() => loading = true);
+    setState(() => profileUpdating = true);
     PaintingBinding.instance.imageCache.clear();
     PaintingBinding.instance.imageCache.clearLiveImages();
 
@@ -698,9 +823,13 @@ void didChangeAppLifecycleState(AppLifecycleState state) {
 
       String? newAvatarPath;
       if (image != null) {
+        final ext = _extensionFromName(image.name);
+        final mimeType = _resolveMimeType(image, ext);
         newAvatarPath = await storage.uploadProfileImage(
           kIsWeb ? bytes! : File(image.path),
           currentUserId!,
+          originalFileName: image.name,
+          contentType: mimeType,
         );
       }
       
@@ -755,8 +884,6 @@ void didChangeAppLifecycleState(AppLifecycleState state) {
           return blog;
         }).toList();
       });
-
-      await loadProfileHeader(forceRefresh: true);
       
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -783,7 +910,7 @@ void didChangeAppLifecycleState(AppLifecycleState state) {
         );
       }
     } finally {
-      if (mounted) setState(() => loading = false);
+      if (mounted) setState(() => profileUpdating = false);
     }
   }
 
@@ -791,5 +918,44 @@ void didChangeAppLifecycleState(AppLifecycleState state) {
     if (rawValue == null || rawValue.isEmpty) return null;
     if (rawValue.startsWith('http')) return rawValue;
     return Supabase.instance.client.storage.from('blog-images').getPublicUrl(rawValue);
+  }
+
+  String _resolveMimeType(XFile file, String ext) {
+    final fromPicker = file.mimeType?.trim();
+    if (fromPicker != null && fromPicker.isNotEmpty) {
+      return fromPicker;
+    }
+    return _mimeTypeFromExtension(ext);
+  }
+
+  String _extensionFromName(String? name) {
+    if (name == null || !name.contains('.')) return 'jpg';
+    final ext = name.split('.').last.toLowerCase().trim();
+    if (ext.isEmpty || ext.length > 8) return 'jpg';
+    return ext;
+  }
+
+  String _mimeTypeFromExtension(String ext) {
+    switch (ext) {
+      case 'jpg':
+      case 'jpeg':
+        return 'image/jpeg';
+      case 'png':
+        return 'image/png';
+      case 'webp':
+        return 'image/webp';
+      case 'gif':
+        return 'image/gif';
+      case 'bmp':
+        return 'image/bmp';
+      case 'heic':
+        return 'image/heic';
+      case 'heif':
+        return 'image/heif';
+      case 'avif':
+        return 'image/avif';
+      default:
+        return 'application/octet-stream';
+    }
   }
 }

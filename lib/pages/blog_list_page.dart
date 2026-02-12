@@ -26,6 +26,7 @@ class _BlogListPageState extends State<BlogListPage> {
   List<Blog> allBlogs = [];
   List<Map<String, String>> searchUsers = [];
   bool loading = true;
+  bool postsLoading = false;
   String? userId;
   String userDisplayName = 'U';
   String? userAvatarUrl;
@@ -39,6 +40,7 @@ class _BlogListPageState extends State<BlogListPage> {
   OverlayEntry? _overlayEntry;
   final TextEditingController searchController = TextEditingController();
   final FocusNode _focusNode = FocusNode();
+  final ScrollController _postsScrollController = ScrollController();
 
   static const Color colorBlack = Color(0xFF1A1A1A);
   static const Color colorGrey = Color(0xFF757575);
@@ -48,7 +50,7 @@ class _BlogListPageState extends State<BlogListPage> {
   void initState() {
     super.initState();
     loadUser();
-    fetchBlogs();
+    fetchBlogs(showPageLoader: true);
     setupRealtime();
   }
 
@@ -106,8 +108,15 @@ class _BlogListPageState extends State<BlogListPage> {
     });
   }
 
-  Future<void> fetchBlogs() async {
-    setState(() => loading = true);
+  Future<void> fetchBlogs({bool showPageLoader = false}) async {
+    if (!mounted) return;
+    setState(() {
+      if (showPageLoader) {
+        loading = true;
+      } else {
+        postsLoading = true;
+      }
+    });
     try {
       final from = currentPage * pageSize;
       final to = from + pageSize - 1;
@@ -134,11 +143,15 @@ class _BlogListPageState extends State<BlogListPage> {
       setState(() {
         allBlogs = updatedBlogs;
         loading = false;
+        postsLoading = false;
       });
     } catch (e) {
       debugPrint('Error loading blogs: $e');
       if (!mounted) return;
-      setState(() => loading = false);
+      setState(() {
+        loading = false;
+        postsLoading = false;
+      });
     }
   }
 
@@ -153,9 +166,54 @@ class _BlogListPageState extends State<BlogListPage> {
         .subscribe();
   }
 
-  void _changePage(int delta) {
+  Future<void> _changePage(int delta) async {
     setState(() => currentPage += delta);
-    fetchBlogs();
+    await fetchBlogs();
+    _scrollPostsToTop();
+  }
+
+  Future<void> _goToFirstPage() async {
+    if (currentPage == 0) return;
+    setState(() => currentPage = 0);
+    await fetchBlogs();
+    _scrollPostsToTop();
+  }
+
+  Future<void> _goToLastPage() async {
+    if (loading || postsLoading) return;
+    var probePage = currentPage;
+    try {
+      while (true) {
+        final from = (probePage + 1) * pageSize;
+        final to = from + pageSize - 1;
+
+        final rows = await Supabase.instance.client
+            .from('blogs')
+            .select('id')
+            .order('created_at', ascending: isAscending)
+            .range(from, to) as List<dynamic>;
+
+        if (rows.isEmpty) break;
+        probePage += 1;
+        if (rows.length < pageSize) break;
+      }
+
+      if (!mounted || probePage == currentPage) return;
+      setState(() => currentPage = probePage);
+      await fetchBlogs();
+      _scrollPostsToTop();
+    } catch (e) {
+      debugPrint('Error jumping to last page: $e');
+    }
+  }
+
+  void _scrollPostsToTop() {
+    if (!_postsScrollController.hasClients) return;
+    _postsScrollController.animateTo(
+      0,
+      duration: const Duration(milliseconds: 280),
+      curve: Curves.easeOut,
+    );
   }
 
   void _toggleSort(bool ascending) {
@@ -293,8 +351,17 @@ class _BlogListPageState extends State<BlogListPage> {
   Future<void> toggleLike(Blog blog) async {
     if (userId == null) return;
     try {
-      await service.toggleLike(blog, userId!);
-      fetchBlogs();
+      final updated = await service.toggleLike(blog, userId!);
+      if (updated == null || !mounted) return;
+      setState(() {
+        final index = allBlogs.indexWhere((b) => b.id == blog.id);
+        if (index != -1) {
+          allBlogs[index] = allBlogs[index].copyWith(
+            likesCount: updated.likesCount,
+            isLiked: updated.isLiked,
+          );
+        }
+      });
     } catch (e) {
       debugPrint('Error: $e');
     }
@@ -436,7 +503,7 @@ OverlayEntry _createOverlayEntry() {
       setState(() => loading = true);
       final success = await service.deleteBlog(blog.id);
       if (success) {
-        fetchBlogs();
+        fetchBlogs(showPageLoader: true);
       } else {
         setState(() => loading = false);
       }
@@ -506,7 +573,25 @@ OverlayEntry _createOverlayEntry() {
             final res = await Navigator.of(
               context,
             ).push(MaterialPageRoute(builder: (_) => const CreateBlogPage()));
-            if (res != null) fetchBlogs();
+            if (!mounted || res == null) return;
+            if (res is Blog && currentPage == 0) {
+              final created = res.copyWith(
+                username: (res.username != null && res.username!.isNotEmpty)
+                    ? res.username
+                    : userDisplayName,
+                authorAvatarUrl: _toPublicBlogImageUrl(
+                  res.authorAvatarUrl ?? userAvatarUrl,
+                ),
+              );
+              setState(() {
+                allBlogs = [created, ...allBlogs];
+                if (allBlogs.length > pageSize) {
+                  allBlogs = allBlogs.sublist(0, pageSize);
+                }
+              });
+            } else {
+              fetchBlogs();
+            }
           },
         ),
       ),
@@ -516,6 +601,7 @@ OverlayEntry _createOverlayEntry() {
   Widget _buildScrollableContent() {
     if (allBlogs.isEmpty) {
       return ListView(
+        controller: _postsScrollController,
         physics: const AlwaysScrollableScrollPhysics(),
         children: const [
           SizedBox(height: 220),
@@ -524,43 +610,70 @@ OverlayEntry _createOverlayEntry() {
       );
     }
 
-    return ListView.builder(
-      padding: const EdgeInsets.symmetric(vertical: 12),
-      physics: const AlwaysScrollableScrollPhysics(),
-      itemCount: allBlogs.length + 1,
-      itemBuilder: (context, index) {
-        if (index == allBlogs.length) {
-          return _buildPaginationRow();
-        }
+    return Stack(
+      children: [
+        ListView.builder(
+          controller: _postsScrollController,
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          physics: const AlwaysScrollableScrollPhysics(),
+          itemCount: allBlogs.length + 1,
+          itemBuilder: (context, index) {
+            if (index == allBlogs.length) {
+              return _buildPaginationRow();
+            }
 
-        final blog = allBlogs[index];
-        return BlogCard(
-          blog: blog,
-          currentUserId: userId,
-          onTap: () => Navigator.of(
-            context,
-          ).push(MaterialPageRoute(builder: (_) => BlogDetailPage(blog: blog))),
-          onLike: () => toggleLike(blog),
-          onComment: () => Navigator.of(
-            context,
-          ).push(MaterialPageRoute(builder: (_) => BlogDetailPage(blog: blog))),
-          onProfileTap: () async {
-            await Navigator.of(context).push(
-              MaterialPageRoute(
-                builder: (_) => ProfilePage(userId: blog.userId),
-              ),
+            final blog = allBlogs[index];
+            return BlogCard(
+              blog: blog,
+              currentUserId: userId,
+              onTap: () => Navigator.of(
+                context,
+              ).push(MaterialPageRoute(builder: (_) => BlogDetailPage(blog: blog))),
+              onLike: () => toggleLike(blog),
+              onComment: () => Navigator.of(
+                context,
+              ).push(MaterialPageRoute(builder: (_) => BlogDetailPage(blog: blog))),
+              onProfileTap: () async {
+                await Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => ProfilePage(userId: blog.userId),
+                  ),
+                );
+                fetchBlogs();
+              },
+              onEdit: () async {
+                final updated = await Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => UpdateBlogPage(blog: blog)),
+                );
+                if (!mounted || updated == null) return;
+                if (updated is Blog) {
+                  setState(() {
+                    final i = allBlogs.indexWhere((b) => b.id == updated.id);
+                    if (i != -1) {
+                      allBlogs[i] = allBlogs[i].copyWith(
+                        title: updated.title,
+                        content: updated.content,
+                        imageUrls: updated.imageUrls,
+                        updatedAt: updated.updatedAt,
+                      );
+                    }
+                  });
+                } else {
+                  fetchBlogs();
+                }
+              },
+              onDelete: () => _handleDelete(blog),
             );
-            fetchBlogs();
           },
-          onEdit: () async {
-            final updated = await Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => UpdateBlogPage(blog: blog)),
-            );
-            if (updated != null) fetchBlogs();
-          },
-          onDelete: () => _handleDelete(blog),
-        );
-      },
+        ),
+        if (postsLoading)
+          const Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            child: LinearProgressIndicator(color: colorBlack),
+          ),
+      ],
     );
   }
 
@@ -571,6 +684,11 @@ OverlayEntry _createOverlayEntry() {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
+          _navButton(
+            Icons.first_page,
+            currentPage > 0 ? _goToFirstPage : null,
+          ),
+          const SizedBox(width: 6),
           _navButton(
             Icons.chevron_left,
             currentPage > 0 ? () => _changePage(-1) : null,
@@ -589,6 +707,11 @@ OverlayEntry _createOverlayEntry() {
           _navButton(
             Icons.chevron_right,
             hasNext ? () => _changePage(1) : null,
+          ),
+          const SizedBox(width: 6),
+          _navButton(
+            Icons.last_page,
+            hasNext ? _goToLastPage : null,
           ),
         ],
       ),
@@ -715,6 +838,7 @@ OverlayEntry _createOverlayEntry() {
   @override
   void dispose() {
     _removeOverlay();
+    _postsScrollController.dispose();
     searchController.dispose();
     _focusNode.dispose();
     super.dispose();

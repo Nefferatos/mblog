@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -9,7 +10,11 @@ class CommentTile extends StatefulWidget {
   final Comment comment;
   final String currentUserId;
   final VoidCallback? onDelete;
-  final Function(String updatedContent, XFile? newImage) onUpdate;
+  final Function(
+    String updatedContent,
+    List<XFile>? newImages,
+    List<String>? retainedExistingImageUrls,
+  ) onUpdate;
 
   const CommentTile({
     super.key,
@@ -28,11 +33,14 @@ class _CommentTileState extends State<CommentTile> {
   static const Color colorBlack = Color(0xFF1A1A1A);
   static const Color colorGrey = Color(0xFF757575);
   static const Color colorBubble = Color(0xFFF2F3F5);
+  static const Color colorDirtyWhite = Color(0xFFF5F5F5);
 
-  String? get imagePublicUrl {
-    if (widget.comment.imageUrl == null || widget.comment.imageUrl!.isEmpty) return null;
-    if (widget.comment.imageUrl!.startsWith('http')) return widget.comment.imageUrl;
-    return Supabase.instance.client.storage.from('comment-images').getPublicUrl(widget.comment.imageUrl!);
+  List<String> get imagePublicUrls {
+    if (widget.comment.imageUrls.isEmpty) return [];
+    return widget.comment.imageUrls.map((url) {
+      if (url.startsWith('http')) return url;
+      return Supabase.instance.client.storage.from('comment-images').getPublicUrl(url);
+    }).toList();
   }
 
   String? get avatarPublicUrl {
@@ -43,68 +51,212 @@ class _CommentTileState extends State<CommentTile> {
 
   void _showEditDialog() {
     final controller = TextEditingController(text: widget.comment.content);
-    XFile? tempImage;
-    Uint8List? tempWebBytes;
+    final List<XFile> tempImages = [];
+    final List<Uint8List> tempWebBytes = [];
+    final List<String> editableExistingImages = List<String>.from(imagePublicUrls);
 
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
       builder: (context) => StatefulBuilder(
-        builder: (context, setDialogState) => Padding(
-          padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom, left: 20, right: 20, top: 20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text("Edit Comment", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
-              const SizedBox(height: 16),
-              TextField(
-                controller: controller,
-                maxLines: 4,
-                decoration: InputDecoration(
-                  hintText: "Update your reply...",
-                  fillColor: colorBubble,
-                  filled: true,
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
-                ),
-              ),
-              if (tempImage != null)
-                Padding(
-                  padding: const EdgeInsets.only(top: 12),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(12),
-                    child: kIsWeb ? Image.memory(tempWebBytes!, height: 120) : Image.file(File(tempImage!.path), height: 120),
+        builder: (context, setDialogState) {
+          final hasSelectedImages = tempImages.isNotEmpty;
+          final hasExistingImages = editableExistingImages.isNotEmpty;
+          return SingleChildScrollView(
+            padding: EdgeInsets.only(
+              bottom: MediaQuery.of(context).viewInsets.bottom + 20,
+              left: 24,
+              right: 24,
+              top: 20,
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'EDIT COMMENT',
+                  style: TextStyle(
+                    color: colorBlack,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: 1.5,
+                    fontSize: 13,
                   ),
                 ),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  TextButton.icon(
-                    onPressed: () async {
-                      final img = await _picker.pickImage(source: ImageSource.gallery);
-                      if (img != null) {
-                        final bytes = await img.readAsBytes();
-                        setDialogState(() { tempImage = img; tempWebBytes = bytes; });
-                      }
-                    },
-                    icon: const Icon(Icons.add_photo_alternate_outlined),
-                    label: const Text("Update Image"),
+                const SizedBox(height: 12),
+                if (hasSelectedImages || hasExistingImages) ...[
+                  SizedBox(
+                    height: 80,
+                    child: ListView.separated(
+                      scrollDirection: Axis.horizontal,
+                      itemCount: editableExistingImages.length + tempImages.length + 1,
+                      separatorBuilder: (_, __) => const SizedBox(width: 8),
+                      itemBuilder: (context, index) {
+                        final existingCount = editableExistingImages.length;
+                        final selectedCount = tempImages.length;
+                        final addTileIndex = existingCount + selectedCount;
+
+                        if (index == addTileIndex) {
+                          return _buildAddImageTile(
+                            onTap: () async {
+                              final imgs = await _picker.pickMultiImage(
+                                imageQuality: 70,
+                              );
+                              if (imgs.isEmpty) return;
+                              final bytes = await Future.wait(
+                                imgs.map((e) => e.readAsBytes()),
+                              );
+                              setDialogState(() {
+                                tempImages.addAll(imgs);
+                                tempWebBytes.addAll(bytes);
+                              });
+                            },
+                          );
+                        }
+
+                        if (index < existingCount) {
+                          return Stack(
+                            children: [
+                              ClipRRect(
+                                borderRadius: BorderRadius.circular(12),
+                                child: Image.network(
+                                  editableExistingImages[index],
+                                  width: 80,
+                                  height: 80,
+                                  fit: BoxFit.cover,
+                                  errorBuilder: (context, error, stackTrace) =>
+                                      Container(
+                                    width: 80,
+                                    height: 80,
+                                    color: colorBubble,
+                                    child: const Icon(
+                                      Icons.broken_image,
+                                      color: colorGrey,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              Positioned(
+                                right: 0,
+                                child: GestureDetector(
+                                  onTap: () {
+                                    setDialogState(() {
+                                      editableExistingImages.removeAt(index);
+                                    });
+                                  },
+                                  child: const CircleAvatar(
+                                    radius: 12,
+                                    backgroundColor: colorBlack,
+                                    child: Icon(
+                                      Icons.close,
+                                      size: 14,
+                                      color: Colors.white,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          );
+                        }
+
+                        final selectedIndex = index - existingCount;
+                        return Stack(
+                          children: [
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(12),
+                              child: _buildPickedImage(
+                                tempImages[selectedIndex],
+                                webBytes: selectedIndex < tempWebBytes.length
+                                    ? tempWebBytes[selectedIndex]
+                                    : null,
+                                width: 80,
+                                height: 80,
+                              ),
+                            ),
+                            Positioned(
+                              right: 0,
+                              child: GestureDetector(
+                                onTap: () {
+                                  setDialogState(() {
+                                    tempImages.removeAt(selectedIndex);
+                                    tempWebBytes.removeAt(selectedIndex);
+                                  });
+                                },
+                                child: const CircleAvatar(
+                                  radius: 12,
+                                  backgroundColor: colorBlack,
+                                  child: Icon(
+                                    Icons.close,
+                                    size: 14,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        );
+                      },
+                    ),
                   ),
-                  ElevatedButton(
-                    onPressed: () {
-                      widget.onUpdate(controller.text, tempImage);
-                      Navigator.pop(context);
-                    },
-                    style: ElevatedButton.styleFrom(backgroundColor: colorBlack, foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
-                    child: const Text("Save Changes"),
-                  ),
+                  const SizedBox(height: 10),
                 ],
-              ),
-              const SizedBox(height: 20),
-            ],
-          ),
-        ),
+                Row(
+                  children: [
+                    IconButton(
+                      icon: const Icon(Icons.add_photo_alternate_outlined),
+                      onPressed: () async {
+                        final imgs = await _picker.pickMultiImage(
+                          imageQuality: 70,
+                        );
+                        if (imgs.isEmpty) return;
+                        final bytes = await Future.wait(
+                          imgs.map((e) => e.readAsBytes()),
+                        );
+                        setDialogState(() {
+                          tempImages.addAll(imgs);
+                          tempWebBytes.addAll(bytes);
+                        });
+                      },
+                    ),
+                    Expanded(
+                      child: TextField(
+                        controller: controller,
+                        maxLines: 4,
+                        minLines: 1,
+                        decoration: InputDecoration(
+                          hintText: 'Write a comment...',
+                          filled: true,
+                          fillColor: colorDirtyWhite,
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(25),
+                            borderSide: BorderSide.none,
+                          ),
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 8,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    IconButton(
+                      icon: const Icon(Icons.send_rounded, color: colorBlack),
+                      onPressed: () {
+                        widget.onUpdate(
+                          controller.text,
+                          tempImages.isNotEmpty ? tempImages : null,
+                          editableExistingImages,
+                        );
+                        Navigator.pop(context);
+                      },
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          );
+        },
       ),
     );
   }
@@ -146,9 +298,38 @@ class _CommentTileState extends State<CommentTile> {
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          Text(
-                            widget.comment.userName.isNotEmpty ? widget.comment.userName : "Anonymous",
-                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: colorBlack),
+                          Expanded(
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Flexible(
+                                  child: Text(
+                                    widget.comment.userName.isNotEmpty ? widget.comment.userName : "Anonymous",
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: colorBlack),
+                                  ),
+                                ),
+                                if (isAuthor) ...[
+                                  const SizedBox(width: 6),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                    decoration: BoxDecoration(
+                                      color: Colors.white,
+                                      borderRadius: BorderRadius.circular(6),
+                                    ),
+                                    child: const Text(
+                                      "YOU",
+                                      style: TextStyle(
+                                        fontSize: 9,
+                                        fontWeight: FontWeight.w900,
+                                        color: colorGrey,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ],
+                            ),
                           ),
                           if (isAuthor)
                             PopupMenuButton<String>(
@@ -170,28 +351,23 @@ class _CommentTileState extends State<CommentTile> {
                         widget.comment.content,
                         style: const TextStyle(fontSize: 14, height: 1.3, color: colorBlack),
                       ),
+                      if (imagePublicUrls.isNotEmpty) ...[
+                        const SizedBox(height: 8),
+                        _buildCommentImageGrid(imagePublicUrls),
+                      ],
+                      const SizedBox(height: 6),
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (widget.comment.createdAt != null)
+                            Text(
+                              _formatDateTime(widget.comment.createdAt!),
+                              style: const TextStyle(color: colorGrey, fontSize: 10),
+                            ),
+                        ],
+                      ),
                     ],
                   ),
-                ),
-                if (imagePublicUrl != null)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 8, left: 4),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(12),
-                      child: Image.network(
-                        imagePublicUrl!,
-                        width: MediaQuery.of(context).size.width * 0.6,
-                        fit: BoxFit.cover,
-                        loadingBuilder: (context, child, loadingProgress) {
-                          if (loadingProgress == null) return child;
-                          return Container(width: 100, height: 100, color: colorBubble);
-                        },
-                      ),
-                    ),
-                  ),
-                const Padding(
-                  padding: EdgeInsets.only(top: 4, left: 8),
-                  child: Text("Just now", style: TextStyle(color: colorGrey, fontSize: 10)),
                 ),
               ],
             ),
@@ -199,5 +375,161 @@ class _CommentTileState extends State<CommentTile> {
         ],
       ),
     );
+  }
+
+  Widget _buildPickedImage(
+    XFile image, {
+    Uint8List? webBytes,
+    double? width,
+    double? height,
+  }) {
+    if (kIsWeb) {
+      if (webBytes != null) {
+        return Image.memory(webBytes, width: width, height: height, fit: BoxFit.contain);
+      }
+      return FutureBuilder<Uint8List>(
+        future: image.readAsBytes(),
+        builder: (context, snapshot) {
+          if (snapshot.hasData) {
+            return Image.memory(
+              snapshot.data!,
+              width: width,
+              height: height,
+              fit: BoxFit.contain,
+            );
+          }
+          return Container(
+            width: width,
+            height: height,
+            color: colorDirtyWhite,
+            child: const Center(
+              child: SizedBox(
+                height: 14,
+                width: 14,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            ),
+          );
+        },
+      );
+    }
+    return Image.file(
+      File(image.path),
+      width: width,
+      height: height,
+      fit: BoxFit.contain,
+    );
+  }
+
+  Widget _buildAddImageTile({required VoidCallback onTap}) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: 80,
+        height: 80,
+        decoration: BoxDecoration(
+          color: colorDirtyWhite,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: colorGrey.withOpacity(0.35)),
+        ),
+        child: const Icon(Icons.add, color: colorGrey),
+      ),
+    );
+  }
+
+  Widget _buildCommentImageGrid(List<String> urls) {
+    final count = urls.length;
+    final shownCount = count > 4 ? 4 : count;
+    const spacing = 6.0;
+
+    if (shownCount == 1) {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxHeight: 220),
+          child: _commentImage(urls.first, fit: BoxFit.contain),
+        ),
+      );
+    }
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final rows = (shownCount / 2).ceil();
+        final tileSize = (constraints.maxWidth - spacing) / 2;
+        final totalHeight = rows * tileSize + (rows - 1) * spacing;
+
+        return SizedBox(
+          height: totalHeight,
+          child: GridView.builder(
+            physics: const NeverScrollableScrollPhysics(),
+            padding: EdgeInsets.zero,
+            itemCount: shownCount,
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 2,
+              crossAxisSpacing: spacing,
+              mainAxisSpacing: spacing,
+              childAspectRatio: 1,
+            ),
+            itemBuilder: (context, index) {
+              final image = ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: _commentImage(urls[index], fit: BoxFit.cover),
+              );
+              if (index == shownCount - 1 && count > shownCount) {
+                return Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    image,
+                    Container(
+                      decoration: BoxDecoration(
+                        color: Colors.black45,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      alignment: Alignment.center,
+                      child: Text(
+                        '+${count - shownCount}',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 18,
+                        ),
+                      ),
+                    ),
+                  ],
+                );
+              }
+              return image;
+            },
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _commentImage(String url, {BoxFit fit = BoxFit.contain}) {
+    return Image.network(
+      url,
+      fit: fit,
+      loadingBuilder: (context, child, loadingProgress) {
+        if (loadingProgress == null) return child;
+        return Container(
+          color: colorBubble,
+          child: const Center(child: CircularProgressIndicator(strokeWidth: 2)),
+        );
+      },
+      errorBuilder: (context, error, stackTrace) => Container(
+        color: colorBubble,
+        child: const Center(
+          child: Icon(Icons.broken_image, color: colorGrey),
+        ),
+      ),
+    );
+  }
+
+  String _formatDateTime(DateTime dt) {
+    final hour = dt.hour % 12 == 0 ? 12 : dt.hour % 12;
+    final minute = dt.minute.toString().padLeft(2, '0');
+    final suffix = dt.hour >= 12 ? 'PM' : 'AM';
+    return '${dt.day}/${dt.month}/${dt.year} $hour:$minute $suffix';
   }
 }

@@ -9,6 +9,7 @@ class Blog {
   final String? excerpt;
   final String userId;
   final DateTime? createdAt;
+  final DateTime? updatedAt;
   final String? username;
   final bool isLiked;      
   final int likesCount;
@@ -27,6 +28,7 @@ class Blog {
     this.excerpt,
     required this.userId,
     this.createdAt,
+    this.updatedAt,
     this.username = 'Anonymous',
     this.isLiked = false,
     this.likesCount = 0,
@@ -57,6 +59,9 @@ class Blog {
       username: (rawUsername ?? 'Anonymous').toString(),
       createdAt: map['created_at'] != null
           ? DateTime.tryParse(map['created_at'].toString())
+          : null,
+      updatedAt: map['updated_at'] != null
+          ? DateTime.tryParse(map['updated_at'].toString())
           : null,
       isLiked: map['is_liked'] ?? false, 
       likesCount: map['likes_count'] ?? 0,
@@ -107,6 +112,7 @@ class Blog {
   String? excerpt,
   String? userId,
   DateTime? createdAt,
+  DateTime? updatedAt,
   String? username,
   bool? isLiked,
   int? likesCount,
@@ -127,6 +133,7 @@ class Blog {
     excerpt: excerpt ?? this.excerpt,
     userId: userId ?? this.userId,
     createdAt: createdAt ?? this.createdAt,
+    updatedAt: updatedAt ?? this.updatedAt,
     username: username ?? this.username,
     isLiked: isLiked ?? this.isLiked,
     likesCount: likesCount ?? this.likesCount,

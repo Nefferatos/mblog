@@ -96,6 +96,21 @@ class _CreateBlogPageState extends State<CreateBlogPage> {
     });
   }
 
+  void reorderImage(int oldIndex, int newIndex) {
+    final imagesCount = pickedImages.length;
+    if (oldIndex >= imagesCount) return;
+    setState(() {
+      if (newIndex > imagesCount) newIndex = imagesCount;
+      if (newIndex > oldIndex) newIndex -= 1;
+      final movedImage = pickedImages.removeAt(oldIndex);
+      pickedImages.insert(newIndex, movedImage);
+      if (kIsWeb && oldIndex < webImageBytes.length) {
+        final movedBytes = webImageBytes.removeAt(oldIndex);
+        webImageBytes.insert(newIndex, movedBytes);
+      }
+    });
+  }
+
   Future<void> submit() async {
     if (titleController.text.trim().isEmpty || contentController.text.trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -112,10 +127,21 @@ class _CreateBlogPageState extends State<CreateBlogPage> {
     try {
       final imageUrls = <String>[];
       for (int i = 0; i < pickedImages.length; i++) {
-        final fileName = 'blog-${DateTime.now().millisecondsSinceEpoch}-$i.png';
+        final image = pickedImages[i];
+        final ext = _extensionFromName(image.name);
+        final fileName = 'blog-${DateTime.now().millisecondsSinceEpoch}-$i.$ext';
+        final mimeType = _resolveMimeType(image, ext);
         final uploadedUrl = kIsWeb
-            ? await storage.uploadImage(webImageBytes[i], fileName)
-            : await storage.uploadImage(File(pickedImages[i].path), fileName);
+            ? await storage.uploadImage(
+                webImageBytes[i],
+                fileName,
+                contentType: mimeType,
+              )
+            : await storage.uploadImage(
+                File(image.path),
+                fileName,
+                contentType: mimeType,
+              );
         if (uploadedUrl != null && uploadedUrl.isNotEmpty) {
           imageUrls.add(uploadedUrl);
         }
@@ -185,6 +211,45 @@ class _CreateBlogPageState extends State<CreateBlogPage> {
     titleController.dispose();
     contentController.dispose();
     super.dispose();
+  }
+
+  String _resolveMimeType(XFile file, String ext) {
+    final fromPicker = file.mimeType?.trim();
+    if (fromPicker != null && fromPicker.isNotEmpty) {
+      return fromPicker;
+    }
+    return _mimeTypeFromExtension(ext);
+  }
+
+  String _extensionFromName(String? name) {
+    if (name == null || !name.contains('.')) return 'jpg';
+    final ext = name.split('.').last.toLowerCase().trim();
+    if (ext.isEmpty || ext.length > 8) return 'jpg';
+    return ext;
+  }
+
+  String _mimeTypeFromExtension(String ext) {
+    switch (ext) {
+      case 'jpg':
+      case 'jpeg':
+        return 'image/jpeg';
+      case 'png':
+        return 'image/png';
+      case 'webp':
+        return 'image/webp';
+      case 'gif':
+        return 'image/gif';
+      case 'bmp':
+        return 'image/bmp';
+      case 'heic':
+        return 'image/heic';
+      case 'heif':
+        return 'image/heif';
+      case 'avif':
+        return 'image/avif';
+      default:
+        return 'application/octet-stream';
+    }
   }
 
   @override
@@ -284,37 +349,71 @@ class _CreateBlogPageState extends State<CreateBlogPage> {
               const SizedBox(height: 12),
               SizedBox(
                 height: 92,
-                child: ListView.builder(
+                child: ReorderableListView.builder(
                   scrollDirection: Axis.horizontal,
-                  itemCount: pickedImages.length,
+                  buildDefaultDragHandles: false,
+                  onReorder: reorderImage,
+                  itemCount: pickedImages.length + 1,
                   itemBuilder: (context, index) {
-                    return Padding(
-                      padding: const EdgeInsets.only(right: 10),
-                      child: Stack(
-                        children: [
-                          ClipRRect(
-                            borderRadius: BorderRadius.circular(10),
-                            child: SizedBox(
-                              width: 92,
-                              height: 92,
-                              child: kIsWeb
-                                  ? Image.memory(webImageBytes[index], fit: BoxFit.cover)
-                                  : Image.file(File(pickedImages[index].path), fit: BoxFit.cover),
+                    if (index == pickedImages.length) {
+                      return Padding(
+                        key: const ValueKey('add_tile_create_blog'),
+                        padding: const EdgeInsets.only(right: 10),
+                        child: GestureDetector(
+                          onTap: pickedImages.length >= maxImagesCount ? null : pickImages,
+                          child: Container(
+                            width: 92,
+                            height: 92,
+                            decoration: BoxDecoration(
+                              color: colorDirtyWhite,
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(color: colorGrey.withOpacity(0.35)),
                             ),
+                            child: const Icon(Icons.add, color: colorGrey),
                           ),
-                          Positioned(
-                            top: 4,
-                            right: 4,
-                            child: GestureDetector(
-                              onTap: () => removeImageAt(index),
-                              child: const CircleAvatar(
-                                radius: 11,
-                                backgroundColor: Colors.black54,
-                                child: Icon(Icons.close, size: 13, color: Colors.white),
+                        ),
+                      );
+                    }
+                    return Padding(
+                      key: ValueKey('${pickedImages[index].path}-${pickedImages[index].name}'),
+                      padding: const EdgeInsets.only(right: 10),
+                      child: ReorderableDragStartListener(
+                        index: index,
+                        child: Stack(
+                          children: [
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(10),
+                              child: SizedBox(
+                                width: 92,
+                                height: 92,
+                                child: kIsWeb
+                                    ? Image.memory(webImageBytes[index], fit: BoxFit.cover)
+                                    : Image.file(File(pickedImages[index].path), fit: BoxFit.cover),
                               ),
                             ),
-                          ),
-                        ],
+                            Positioned(
+                              top: 4,
+                              right: 4,
+                              child: GestureDetector(
+                                onTap: () => removeImageAt(index),
+                                child: const CircleAvatar(
+                                  radius: 11,
+                                  backgroundColor: Colors.black54,
+                                  child: Icon(Icons.close, size: 13, color: Colors.white),
+                                ),
+                              ),
+                            ),
+                            const Positioned(
+                              left: 4,
+                              bottom: 4,
+                              child: CircleAvatar(
+                                radius: 11,
+                                backgroundColor: Colors.black45,
+                                child: Icon(Icons.drag_indicator, size: 13, color: Colors.white),
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                     );
                   },

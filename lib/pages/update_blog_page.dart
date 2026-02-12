@@ -19,7 +19,7 @@ class _UpdateBlogPageState extends State<UpdateBlogPage> {
   final titleController = TextEditingController();
   final contentController = TextEditingController();
   
-  // To support reordering, we combine existing and new images into a single list of objects
+  // Keep existing and newly selected images in one list for unified preview/upload.
   List<Map<String, dynamic>> allImages = [];
   
   final SupabaseService service = SupabaseService();
@@ -30,7 +30,7 @@ class _UpdateBlogPageState extends State<UpdateBlogPage> {
 
   static const Color colorBlack = Color(0xFF1A1A1A);
   static const Color colorGrey = Color(0xFF757575);
-  static const Color colorDirtyWhite = Color(0xFFF8F9FA);
+  static const Color colorDirtyWhite = Color(0xFFF5F5F5);
 
   @override
   void initState() {
@@ -52,7 +52,8 @@ class _UpdateBlogPageState extends State<UpdateBlogPage> {
     final selected = await ImagePicker().pickMultiImage(imageQuality: 80);
     if (selected.isEmpty) return;
 
-    if (allImages.length >= maxImagesCount) {
+    final remainingSlots = maxImagesCount - allImages.length;
+    if (remainingSlots <= 0) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Maximum 10 images allowed'), backgroundColor: Colors.red),
@@ -60,28 +61,58 @@ class _UpdateBlogPageState extends State<UpdateBlogPage> {
       return;
     }
 
-    final remainingSlots = maxImagesCount - allImages.length;
     final imagesToAdd = selected.take(remainingSlots).toList();
+    final localItems = <Map<String, dynamic>>[];
 
     for (final image in imagesToAdd) {
       final imageSize = await image.length();
       if (imageSize > maxImageBytes) continue;
-      
       final Uint8List bytes = await image.readAsBytes();
-      setState(() {
-        allImages.add({
-          'type': 'local',
-          'file': image,
-          'bytes': bytes, // stored for web and preview
-        });
+      localItems.add({
+        'type': 'local',
+        'file': image,
+        'bytes': bytes,
       });
+    }
+
+    if (!mounted) return;
+    setState(() => allImages.addAll(localItems));
+
+    if (selected.length > remainingSlots) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Only 10 images can be selected'), backgroundColor: Colors.orange),
+      );
+    }
+    if (localItems.length < imagesToAdd.length) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Some images were skipped (over 15 MB)'), backgroundColor: Colors.orange),
+      );
     }
   }
 
   void removeImageAt(int index) => setState(() => allImages.removeAt(index));
 
+  void reorderImage(int oldIndex, int newIndex) {
+    final imagesCount = allImages.length;
+    if (oldIndex >= imagesCount) return;
+    setState(() {
+      if (newIndex > imagesCount) newIndex = imagesCount;
+      if (newIndex > oldIndex) newIndex -= 1;
+      final moved = allImages.removeAt(oldIndex);
+      allImages.insert(newIndex, moved);
+    });
+  }
+
   Future<void> submit() async {
-    if (titleController.text.isEmpty) return;
+    if (titleController.text.trim().isEmpty || contentController.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please fill in both title and content'),
+          backgroundColor: colorBlack,
+        ),
+      );
+      return;
+    }
     setState(() => isLoading = true);
     
     try {
@@ -91,25 +122,46 @@ class _UpdateBlogPageState extends State<UpdateBlogPage> {
         if (item['type'] == 'network') {
           finalUrls.add(item['value']);
         } else {
-          // Upload new local image
-          final fileName = 'blog-${DateTime.now().millisecondsSinceEpoch}-${allImages.indexOf(item)}.png';
+          final xfile = item['file'] as XFile;
+          final ext = _extensionFromName(xfile.name);
+          final mimeType = _resolveMimeType(xfile, ext);
+          final fileName = 'blog-${DateTime.now().millisecondsSinceEpoch}-${allImages.indexOf(item)}.$ext';
           final uploadedUrl = kIsWeb
-              ? await storage.uploadImage(item['bytes'], fileName)
-              : await storage.uploadImage(File(item['file'].path), fileName);
+              ? await storage.uploadImage(
+                  item['bytes'],
+                  fileName,
+                  contentType: mimeType,
+                )
+              : await storage.uploadImage(
+                  File(xfile.path),
+                  fileName,
+                  contentType: mimeType,
+                );
           
           if (uploadedUrl != null) finalUrls.add(uploadedUrl);
         }
       }
 
-      await service.updateBlog(
+      final success = await service.updateBlog(
         widget.blog.id,
         title: titleController.text,
         content: contentController.text,
         imageUrls: finalUrls,
       );
+      if (!success) {
+        throw Exception('Update failed');
+      }
 
       if (!mounted) return;
-      Navigator.pop(context, true);
+      Navigator.pop(
+        context,
+        widget.blog.copyWith(
+          title: titleController.text,
+          content: contentController.text,
+          imageUrls: finalUrls,
+          updatedAt: DateTime.now(),
+        ),
+      );
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text("Update failed: $e"), backgroundColor: Colors.red),
@@ -119,20 +171,87 @@ class _UpdateBlogPageState extends State<UpdateBlogPage> {
     }
   }
 
-  // --- UI COMPONENTS ---
-
-  Widget _buildHeroPreview() {
+  Widget _buildHeaderPreview() {
     if (allImages.isEmpty) {
       return Container(
         color: colorDirtyWhite,
-        child: const Icon(Icons.image_outlined, size: 48, color: Colors.grey),
+        child: const Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.add_photo_alternate_outlined, size: 40, color: colorGrey),
+              SizedBox(height: 12),
+              Text(
+                'Add cover images',
+                style: TextStyle(color: colorGrey, fontWeight: FontWeight.w500),
+              ),
+              SizedBox(height: 6),
+              Text(
+                'Up to 10 images, each max 15 MB',
+                style: TextStyle(color: colorGrey, fontSize: 12),
+              ),
+            ],
+          ),
+        ),
       );
     }
     final first = allImages.first;
     if (first['type'] == 'network') {
       return Image.network(first['value'], fit: BoxFit.cover);
     }
-    return Image.memory(first['bytes'], fit: BoxFit.cover);
+    if (kIsWeb) {
+      return Image.memory(first['bytes'], fit: BoxFit.cover);
+    }
+    return Image.file(File(first['file'].path), fit: BoxFit.cover);
+  }
+
+  Widget _buildThumbnail(Map<String, dynamic> item) {
+    if (item['type'] == 'network') {
+      return Image.network(item['value'], fit: BoxFit.cover);
+    }
+    if (kIsWeb) {
+      return Image.memory(item['bytes'], fit: BoxFit.cover);
+    }
+    return Image.file(File(item['file'].path), fit: BoxFit.cover);
+  }
+
+  String _resolveMimeType(XFile file, String ext) {
+    final fromPicker = file.mimeType?.trim();
+    if (fromPicker != null && fromPicker.isNotEmpty) {
+      return fromPicker;
+    }
+    return _mimeTypeFromExtension(ext);
+  }
+
+  String _extensionFromName(String? name) {
+    if (name == null || !name.contains('.')) return 'jpg';
+    final ext = name.split('.').last.toLowerCase().trim();
+    if (ext.isEmpty || ext.length > 8) return 'jpg';
+    return ext;
+  }
+
+  String _mimeTypeFromExtension(String ext) {
+    switch (ext) {
+      case 'jpg':
+      case 'jpeg':
+        return 'image/jpeg';
+      case 'png':
+        return 'image/png';
+      case 'webp':
+        return 'image/webp';
+      case 'gif':
+        return 'image/gif';
+      case 'bmp':
+        return 'image/bmp';
+      case 'heic':
+        return 'image/heic';
+      case 'heif':
+        return 'image/heif';
+      case 'avif':
+        return 'image/avif';
+      default:
+        return 'application/octet-stream';
+    }
   }
 
   @override
@@ -142,131 +261,203 @@ class _UpdateBlogPageState extends State<UpdateBlogPage> {
       appBar: AppBar(
         backgroundColor: Colors.white,
         elevation: 0,
-        leading: IconButton(icon: const Icon(Icons.arrow_back_ios_new, color: colorBlack, size: 20), onPressed: () => Navigator.pop(context)),
-        title: const Text("Edit Story", style: TextStyle(color: colorBlack, fontWeight: FontWeight.bold, fontSize: 18)),
+        centerTitle: true,
+        leading: IconButton(
+          icon: const Icon(Icons.close, color: colorBlack),
+          onPressed: () => Navigator.pop(context),
+        ),
+        title: const Text(
+          'EDIT STORY',
+          style: TextStyle(
+            color: colorBlack,
+            fontWeight: FontWeight.w900,
+            letterSpacing: 2,
+            fontSize: 14,
+          ),
+        ),
         actions: [
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            child: ElevatedButton(
+            padding: const EdgeInsets.only(right: 12, top: 10, bottom: 10),
+            child: TextButton(
               onPressed: isLoading ? null : submit,
-              style: ElevatedButton.styleFrom(
+              style: TextButton.styleFrom(
                 backgroundColor: colorBlack,
-                foregroundColor: Colors.white,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                padding: const EdgeInsets.symmetric(horizontal: 20),
               ),
-              child: isLoading ? const SizedBox(height: 16, width: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : const Text("Save"),
+              child: isLoading
+                  ? const SizedBox(
+                      height: 15,
+                      width: 15,
+                      child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
+                    )
+                  : const Text(
+                      'Update',
+                      style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                    ),
             ),
           ),
         ],
       ),
       body: SingleChildScrollView(
+        padding: const EdgeInsets.symmetric(horizontal: 24),
         child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            AspectRatio(
-              aspectRatio: 16 / 9,
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  _buildHeroPreview(),
-                  Container(decoration: const BoxDecoration(gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Colors.transparent, Colors.black45]))),
-                  const Positioned(bottom: 16, left: 16, child: Text("COVER IMAGE", style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 10, letterSpacing: 1.2))),
-                ],
+            const SizedBox(height: 20),
+            GestureDetector(
+              onTap: pickImages,
+              child: Container(
+                width: double.infinity,
+                height: 200,
+                decoration: BoxDecoration(
+                  color: colorDirtyWhite,
+                  borderRadius: BorderRadius.circular(16),
+                  border: allImages.isEmpty
+                      ? Border.all(color: Colors.grey.shade300, style: BorderStyle.solid)
+                      : null,
+                ),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(16),
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      _buildHeaderPreview(),
+                      if (allImages.isNotEmpty) ...[
+                        Container(color: Colors.black26),
+                        Positioned(
+                          left: 12,
+                          bottom: 12,
+                          child: Text(
+                            '${allImages.length} image(s) selected',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
               ),
             ),
-            Padding(
-              padding: const EdgeInsets.all(24.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text("GALLERY (Hold to reorder)", style: TextStyle(fontWeight: FontWeight.bold, color: colorGrey, fontSize: 11)),
-                  const SizedBox(height: 12),
-                  
-                  // REORDERABLE IMAGE LIST
-                  SizedBox(
-                    height: 100,
-                    child: ReorderableListView.builder(
-                      scrollDirection: Axis.horizontal,
-                      itemCount: allImages.length,
-                      onReorder: (oldIndex, newIndex) {
-                        setState(() {
-                          if (newIndex > oldIndex) newIndex -= 1;
-                          final item = allImages.removeAt(oldIndex);
-                          allImages.insert(newIndex, item);
-                        });
-                      },
-                      itemBuilder: (context, index) {
-                        final item = allImages[index];
-                        return _buildDraggableThumbnail(index, item);
-                      },
-                    ),
-                  ),
+            const SizedBox(height: 8),
+            const Text(
+              'Image preview (up to 10 images, max 15 MB each)',
+              style: TextStyle(color: colorGrey, fontSize: 12),
+            ),
+            if (allImages.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              SizedBox(
+                height: 92,
+                child: ReorderableListView.builder(
+                  scrollDirection: Axis.horizontal,
+                  buildDefaultDragHandles: false,
+                  onReorder: reorderImage,
+                  itemCount: allImages.length + 1,
+                  itemBuilder: (context, index) {
+                    if (index == allImages.length) {
+                      return Padding(
+                        key: const ValueKey('add_tile_update_blog'),
+                        padding: const EdgeInsets.only(right: 10),
+                        child: GestureDetector(
+                          onTap: allImages.length >= maxImagesCount ? null : pickImages,
+                          child: Container(
+                            width: 92,
+                            height: 92,
+                            decoration: BoxDecoration(
+                              color: colorDirtyWhite,
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(color: colorGrey.withOpacity(0.35)),
+                            ),
+                            child: const Icon(Icons.add, color: colorGrey),
+                          ),
+                        ),
+                      );
+                    }
 
-                  const SizedBox(height: 32),
-                  TextField(
-                    controller: titleController,
-                    style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
-                    decoration: const InputDecoration(hintText: 'Story Title', border: InputBorder.none),
-                  ),
-                  const Divider(height: 32),
-                  TextField(
-                    controller: contentController,
-                    maxLines: null,
-                    style: const TextStyle(fontSize: 17, height: 1.6),
-                    decoration: const InputDecoration(hintText: 'Tell your story...', border: InputBorder.none),
-                  ),
-                ],
+                    final item = allImages[index];
+                    final itemKey = item['type'] == 'network'
+                        ? '${item['type']}-${item['value']}'
+                        : '${item['type']}-${(item['file'] as XFile).path}';
+                    return Padding(
+                      key: ValueKey(itemKey),
+                      padding: const EdgeInsets.only(right: 10),
+                      child: ReorderableDragStartListener(
+                        index: index,
+                        child: Stack(
+                          children: [
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(10),
+                              child: SizedBox(
+                                width: 92,
+                                height: 92,
+                                child: _buildThumbnail(item),
+                              ),
+                            ),
+                            Positioned(
+                              top: 4,
+                              right: 4,
+                              child: GestureDetector(
+                                onTap: () => removeImageAt(index),
+                                child: const CircleAvatar(
+                                  radius: 11,
+                                  backgroundColor: Colors.black54,
+                                  child: Icon(Icons.close, size: 13, color: Colors.white),
+                                ),
+                              ),
+                            ),
+                            const Positioned(
+                              left: 4,
+                              bottom: 4,
+                              child: CircleAvatar(
+                                radius: 11,
+                                backgroundColor: Colors.black45,
+                                child: Icon(Icons.drag_indicator, size: 13, color: Colors.white),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+            const SizedBox(height: 32),
+            TextField(
+              controller: titleController,
+              style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w800, color: colorBlack),
+              decoration: const InputDecoration(
+                hintText: 'Title',
+                hintStyle: TextStyle(color: Color(0xFFE0E0E0)),
+                border: InputBorder.none,
+                contentPadding: EdgeInsets.zero,
               ),
             ),
+            const Divider(height: 40, thickness: 1),
+            TextField(
+              controller: contentController,
+              maxLines: null,
+              style: const TextStyle(fontSize: 18, height: 1.6, color: colorBlack),
+              decoration: const InputDecoration(
+                hintText: 'Tell your story...',
+                hintStyle: TextStyle(color: colorGrey),
+                border: InputBorder.none,
+                contentPadding: EdgeInsets.zero,
+              ),
+            ),
+            const SizedBox(height: 100),
           ],
         ),
       ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: allImages.length >= maxImagesCount ? null : pickImages,
         backgroundColor: colorBlack,
-        icon: const Icon(Icons.add_photo_alternate_outlined, color: Colors.white),
-        label: const Text("Add Images", style: TextStyle(color: Colors.white)),
-      ),
-    );
-  }
-
-  Widget _buildDraggableThumbnail(int index, Map<String, dynamic> item) {
-    return ReorderableDragStartListener(
-      key: ValueKey(item),
-      index: index,
-      child: Container(
-        margin: const EdgeInsets.only(right: 12),
-        width: 80,
-        height: 80,
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(12),
-          border: index == 0 ? Border.all(color: colorBlack, width: 2) : null,
-        ),
-        child: Stack(
-          children: [
-            ClipRRect(
-              borderRadius: BorderRadius.circular(10),
-              child: item['type'] == 'network'
-                  ? Image.network(item['value'], width: 80, height: 80, fit: BoxFit.cover)
-                  : Image.memory(item['bytes'], width: 80, height: 80, fit: BoxFit.cover),
-            ),
-            if (index == 0)
-              Positioned(
-                top: 0, left: 0,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                  decoration: const BoxDecoration(color: colorBlack, borderRadius: BorderRadius.only(bottomRight: Radius.circular(8))),
-                  child: const Text("TOP", style: TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.bold)),
-                ),
-              ),
-            Positioned(
-              top: -2, right: -2,
-              child: IconButton(
-                icon: const CircleAvatar(radius: 10, backgroundColor: Colors.red, child: Icon(Icons.close, size: 12, color: Colors.white)),
-                onPressed: () => removeImageAt(index),
-              ),
-            ),
-          ],
-        ),
+        foregroundColor: Colors.white,
+        icon: const Icon(Icons.add_photo_alternate_outlined),
+        label: const Text('Add Images'),
       ),
     );
   }

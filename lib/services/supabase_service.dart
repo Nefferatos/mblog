@@ -154,6 +154,7 @@ Future<Comment?> addComment(
 
   Future<String?> uploadCommentImage(dynamic file, String filename) async {
     try {
+      final contentType = _mimeTypeFromPath(filename);
       if (kIsWeb) {
         final bytes = file as Uint8List;
         await client.storage
@@ -161,10 +162,14 @@ Future<Comment?> addComment(
             .uploadBinary(
               filename,
               bytes,
-              fileOptions: const FileOptions(contentType: 'image/png'),
+              fileOptions: FileOptions(contentType: contentType),
             );
       } else {
-        await client.storage.from('comment-images').upload(filename, file);
+        await client.storage.from('comment-images').upload(
+          filename,
+          file,
+          fileOptions: FileOptions(contentType: contentType),
+        );
       }
       return filename; 
     } catch (e) {
@@ -284,6 +289,31 @@ Future<List<Blog>> getBlogsByUser(String userId) async {
     } catch (e) {
       debugPrint('Error toggling like: $e');
       return null;
+    }
+  }
+
+  String _mimeTypeFromPath(String path) {
+    final ext = path.contains('.') ? path.split('.').last.toLowerCase().trim() : '';
+    switch (ext) {
+      case 'jpg':
+      case 'jpeg':
+        return 'image/jpeg';
+      case 'png':
+        return 'image/png';
+      case 'webp':
+        return 'image/webp';
+      case 'gif':
+        return 'image/gif';
+      case 'bmp':
+        return 'image/bmp';
+      case 'heic':
+        return 'image/heic';
+      case 'heif':
+        return 'image/heif';
+      case 'avif':
+        return 'image/avif';
+      default:
+        return 'application/octet-stream';
     }
   }
   

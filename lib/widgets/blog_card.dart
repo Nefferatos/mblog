@@ -77,8 +77,10 @@ class BlogCard extends StatelessWidget {
               ),
             ),
             title: Row(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Expanded(
+                Flexible(
+                  fit: FlexFit.loose,
                   child: Text(
                     usernameDisplay,
                     maxLines: 1,
@@ -91,7 +93,7 @@ class BlogCard extends StatelessWidget {
                   ),
                 ),
                 if (isOwner) ...[
-                  const SizedBox(width: 8),
+                  const SizedBox(width: 6),
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                     decoration: BoxDecoration(
@@ -148,25 +150,39 @@ class BlogCard extends StatelessWidget {
                   )
                 : null,
           ),
-
-          // Content Section
           InkWell(
             onTap: onTap,
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 4),
-              child: Text(
-                blog.content,
-                maxLines: 3,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: colorBlack,
-                  fontSize: 14,
-                  height: 1.4,
-                ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    blog.title,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: colorBlack,
+                      fontSize: 18,
+                      fontWeight: FontWeight.w800,
+                      height: 1.2,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    blog.content,
+                    maxLines: 3,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: colorBlack,
+                      fontSize: 14,
+                      height: 1.4,
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
-
           if (imageUrls.isNotEmpty)
             Padding(
               padding: const EdgeInsets.all(12.0),
@@ -178,9 +194,7 @@ class BlogCard extends StatelessWidget {
                 ),
               ),
             ),
-
           const Divider(height: 1, indent: 16, endIndent: 16),
-
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
             child: Row(
@@ -287,16 +301,26 @@ class BlogCard extends StatelessWidget {
   Widget _gridImage(String url, {double? height}) {
     return Image.network(
       url,
+      key: ValueKey('$url-$height'),
       height: height,
       width: double.infinity,
       fit: BoxFit.cover,
       errorBuilder: (context, error, stackTrace) => Container(
         height: height ?? double.infinity,
         color: const Color(0xFFEEEEEE),
-        child: const Icon(Icons.broken_image, color: Colors.grey),
+        child: const Center(child: Icon(Icons.broken_image, color: Colors.grey)),
       ),
+      loadingBuilder: (context, child, loadingProgress) {
+        if (loadingProgress == null) return child;
+        return Container(
+          height: height ?? 120,
+          color: const Color(0xFFF5F5F5),
+          child: const Center(child: CircularProgressIndicator(strokeWidth: 2)),
+        );
+      },
     );
   }
+
 }
 
 class _ActionButton extends StatelessWidget {
