@@ -264,6 +264,9 @@ class _CommentTileState extends State<CommentTile> {
   @override
   Widget build(BuildContext context) {
     final bool isAuthor = widget.comment.userId.trim() == widget.currentUserId.trim();
+    final bool isEdited = widget.comment.updatedAt != null &&
+        (widget.comment.createdAt == null ||
+            !widget.comment.updatedAt!.isAtSameMomentAs(widget.comment.createdAt!));
 
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
@@ -297,37 +300,75 @@ class _CommentTileState extends State<CommentTile> {
                     children: [
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Expanded(
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Flexible(
-                                  child: Text(
-                                    widget.comment.userName.isNotEmpty ? widget.comment.userName : "Anonymous",
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: colorBlack),
-                                  ),
-                                ),
-                                if (isAuthor) ...[
-                                  const SizedBox(width: 6),
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                    decoration: BoxDecoration(
-                                      color: Colors.white,
-                                      borderRadius: BorderRadius.circular(6),
-                                    ),
-                                    child: const Text(
-                                      "YOU",
-                                      style: TextStyle(
-                                        fontSize: 9,
-                                        fontWeight: FontWeight.w900,
-                                        color: colorGrey,
+                                Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Flexible(
+                                      child: Text(
+                                        widget.comment.userName.isNotEmpty ? widget.comment.userName : "Anonymous",
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: colorBlack),
                                       ),
                                     ),
+                                    if (isAuthor) ...[
+                                      const SizedBox(width: 6),
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                        decoration: BoxDecoration(
+                                          color: Colors.white,
+                                          borderRadius: BorderRadius.circular(6),
+                                        ),
+                                        child: const Text(
+                                          "YOU",
+                                          style: TextStyle(
+                                            fontSize: 9,
+                                            fontWeight: FontWeight.w900,
+                                            color: colorGrey,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                                const SizedBox(height: 2),
+                                if (isEdited)
+                                  Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                                        decoration: BoxDecoration(
+                                          color: colorDirtyWhite,
+                                          borderRadius: BorderRadius.circular(4),
+                                        ),
+                                        child: const Text(
+                                          "Edited",
+                                          style: TextStyle(
+                                            color: colorGrey,
+                                            fontSize: 8,
+                                            fontWeight: FontWeight.w800,
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 6),
+                                      Text(
+                                        _formatDateTime(widget.comment.updatedAt!),
+                                        style: const TextStyle(color: colorGrey, fontSize: 10),
+                                      ),
+                                    ],
+                                  )
+                                else if (widget.comment.createdAt != null)
+                                  Text(
+                                    _formatDateTime(widget.comment.createdAt!),
+                                    style: const TextStyle(color: colorGrey, fontSize: 10),
                                   ),
-                                ],
                               ],
                             ),
                           ),
@@ -355,17 +396,6 @@ class _CommentTileState extends State<CommentTile> {
                         const SizedBox(height: 8),
                         _buildCommentImageGrid(imagePublicUrls),
                       ],
-                      const SizedBox(height: 6),
-                      Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          if (widget.comment.createdAt != null)
-                            Text(
-                              _formatDateTime(widget.comment.createdAt!),
-                              style: const TextStyle(color: colorGrey, fontSize: 10),
-                            ),
-                        ],
-                      ),
                     ],
                   ),
                 ),
@@ -447,7 +477,10 @@ class _CommentTileState extends State<CommentTile> {
         borderRadius: BorderRadius.circular(12),
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxHeight: 220),
-          child: _commentImage(urls.first, fit: BoxFit.contain),
+          child: GestureDetector(
+            onTap: () => _openImageViewer(urls, 0),
+            child: _commentImage(urls.first, fit: BoxFit.contain),
+          ),
         ),
       );
     }
@@ -475,8 +508,9 @@ class _CommentTileState extends State<CommentTile> {
                 borderRadius: BorderRadius.circular(12),
                 child: _commentImage(urls[index], fit: BoxFit.cover),
               );
+              Widget tile = image;
               if (index == shownCount - 1 && count > shownCount) {
-                return Stack(
+                tile = Stack(
                   fit: StackFit.expand,
                   children: [
                     image,
@@ -498,7 +532,11 @@ class _CommentTileState extends State<CommentTile> {
                   ],
                 );
               }
-              return image;
+              return GestureDetector(
+                onTap: () => _openImageViewer(urls, index),
+                behavior: HitTestBehavior.opaque,
+                child: tile,
+              );
             },
           ),
         );
@@ -522,6 +560,170 @@ class _CommentTileState extends State<CommentTile> {
         child: const Center(
           child: Icon(Icons.broken_image, color: colorGrey),
         ),
+      ),
+    );
+  }
+
+  void _openImageViewer(List<String> urls, int initialIndex) {
+    var currentIndex = initialIndex;
+    final pageController = PageController(initialPage: initialIndex);
+
+    showDialog(
+      context: context,
+      barrierColor: Colors.black,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setViewerState) {
+          return Dialog(
+            insetPadding: EdgeInsets.zero,
+            backgroundColor: Colors.black,
+            child: SafeArea(
+              child: Stack(
+                children: [
+                  Column(
+                    children: [
+                      Expanded(
+                        child: PageView.builder(
+                          controller: pageController,
+                          itemCount: urls.length,
+                          onPageChanged: (index) {
+                            setViewerState(() => currentIndex = index);
+                          },
+                          itemBuilder: (context, index) {
+                            return InteractiveViewer(
+                              child: Image.network(
+                                urls[index],
+                                fit: BoxFit.contain,
+                                errorBuilder: (context, error, stackTrace) =>
+                                    Container(
+                                  color: Colors.black,
+                                  alignment: Alignment.center,
+                                  child: const Icon(
+                                    Icons.broken_image,
+                                    color: Colors.white70,
+                                    size: 40,
+                                  ),
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                      if (urls.length > 1)
+                        Container(
+                          height: 78,
+                          padding: const EdgeInsets.symmetric(vertical: 8),
+                          color: Colors.black87,
+                          child: ListView.separated(
+                            scrollDirection: Axis.horizontal,
+                            padding: const EdgeInsets.symmetric(horizontal: 12),
+                            itemCount: urls.length,
+                            separatorBuilder: (_, __) => const SizedBox(width: 8),
+                            itemBuilder: (context, index) {
+                              final isSelected = index == currentIndex;
+                              return GestureDetector(
+                                onTap: () {
+                                  pageController.animateToPage(
+                                    index,
+                                    duration: const Duration(milliseconds: 220),
+                                    curve: Curves.easeInOut,
+                                  );
+                                  setViewerState(() => currentIndex = index);
+                                },
+                                child: Container(
+                                  decoration: BoxDecoration(
+                                    borderRadius: BorderRadius.circular(8),
+                                    border: Border.all(
+                                      color: isSelected
+                                          ? Colors.white
+                                          : Colors.white24,
+                                      width: isSelected ? 2 : 1,
+                                    ),
+                                  ),
+                                  child: ClipRRect(
+                                    borderRadius: BorderRadius.circular(7),
+                                    child: SizedBox(
+                                      width: 62,
+                                      height: 62,
+                                      child: Image.network(
+                                        urls[index],
+                                        fit: BoxFit.cover,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                    ],
+                  ),
+                  Positioned(
+                    top: 10,
+                    right: 10,
+                    child: IconButton(
+                      icon: const Icon(Icons.close, color: Colors.white),
+                      onPressed: () => Navigator.pop(context),
+                    ),
+                  ),
+                  if (urls.length > 1) ...[
+                    Positioned(
+                      left: 8,
+                      top: 0,
+                      bottom: 78,
+                      child: Center(
+                        child: _viewerNavButton(
+                          icon: Icons.arrow_back_ios_new,
+                          onTap: () {
+                            if (currentIndex <= 0) return;
+                            pageController.previousPage(
+                              duration: const Duration(milliseconds: 220),
+                              curve: Curves.easeInOut,
+                            );
+                          },
+                        ),
+                      ),
+                    ),
+                    Positioned(
+                      right: 8,
+                      top: 0,
+                      bottom: 78,
+                      child: Center(
+                        child: _viewerNavButton(
+                          icon: Icons.arrow_forward_ios,
+                          onTap: () {
+                            if (currentIndex >= urls.length - 1) return;
+                            pageController.nextPage(
+                              duration: const Duration(milliseconds: 220),
+                              curve: Curves.easeInOut,
+                            );
+                          },
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    ).then((_) {
+      pageController.dispose();
+    });
+  }
+
+  Widget _viewerNavButton({required IconData icon, required VoidCallback onTap}) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: 36,
+        height: 36,
+        decoration: const BoxDecoration(
+          color: Colors.black45,
+          shape: BoxShape.circle,
+        ),
+        alignment: Alignment.center,
+        child: Icon(icon, color: Colors.white, size: 16),
       ),
     );
   }

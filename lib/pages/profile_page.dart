@@ -33,6 +33,7 @@ class _ProfilePageState extends State<ProfilePage> with WidgetsBindingObserver {
   List<Blog> blogs = [];
   bool loading = true;
   bool postsLoading = false;
+  bool isRefreshing = false;
   bool profileUpdating = false;
   bool isCurrentUser = false;
 
@@ -171,20 +172,48 @@ void didChangeAppLifecycleState(AppLifecycleState state) {
 
       List<dynamic> data;
       try {
-        data = await Supabase.instance.client
-            .from('blogs')
-            .select('*, likes(*), profiles:user_id(username, avatar_url)')
-            .eq('user_id', widget.userId)
-            .order('created_at', ascending: isAscending)
-            .range(from, to);
+        try {
+          data = await Supabase.instance.client
+              .from('blogs')
+              .select('*, likes(*), profiles:user_id(username, avatar_url)')
+              .eq('user_id', widget.userId)
+              .order('updated_at', ascending: false, nullsFirst: false)
+              .order('created_at', ascending: isAscending)
+              .range(from, to);
+        } catch (e) {
+          if (_isMissingUpdatedAtError(e)) {
+            data = await Supabase.instance.client
+                .from('blogs')
+                .select('*, likes(*), profiles:user_id(username, avatar_url)')
+                .eq('user_id', widget.userId)
+                .order('created_at', ascending: isAscending)
+                .range(from, to);
+          } else {
+            rethrow;
+          }
+        }
       } catch (e) {
         debugPrint('Profile blogs join query failed, using fallback: $e');
-        data = await Supabase.instance.client
-            .from('blogs')
-            .select('*')
-            .eq('user_id', widget.userId)
-            .order('created_at', ascending: isAscending)
-            .range(from, to);
+        try {
+          data = await Supabase.instance.client
+              .from('blogs')
+              .select('*')
+              .eq('user_id', widget.userId)
+              .order('updated_at', ascending: false, nullsFirst: false)
+              .order('created_at', ascending: isAscending)
+              .range(from, to);
+        } catch (fallbackError) {
+          if (_isMissingUpdatedAtError(fallbackError)) {
+            data = await Supabase.instance.client
+                .from('blogs')
+                .select('*')
+                .eq('user_id', widget.userId)
+                .order('created_at', ascending: isAscending)
+                .range(from, to);
+          } else {
+            rethrow;
+          }
+        }
       }
 
       final profile = await _fetchProfileForCurrentPageUser();
@@ -224,6 +253,13 @@ void didChangeAppLifecycleState(AppLifecycleState state) {
         postsLoading = false;
       });
     }
+  }
+
+  bool _isMissingUpdatedAtError(Object error) {
+    final raw = error.toString().toLowerCase();
+    return raw.contains("'updated_at'") &&
+        raw.contains("'blogs'") &&
+        raw.contains('schema cache');
   }
 
   Future<Map<String, String?>> _fetchProfileForCurrentPageUser() async {
@@ -393,9 +429,14 @@ void didChangeAppLifecycleState(AppLifecycleState state) {
       body: RefreshIndicator(
         color: colorBlack,
         onRefresh: () async {
-          currentPage = 0;
-          await loadProfileHeader(forceRefresh: true);
-          await fetchUserBlogs();
+          if (mounted) setState(() => isRefreshing = true);
+          try {
+            currentPage = 0;
+            await loadProfileHeader(forceRefresh: true);
+            await fetchUserBlogs();
+          } finally {
+            if (mounted) setState(() => isRefreshing = false);
+          }
         },
         child: loading
             ? const Center(child: CircularProgressIndicator(color: colorBlack))
@@ -450,6 +491,7 @@ void didChangeAppLifecycleState(AppLifecycleState state) {
                                       );
                                     }
                                   });
+                                  await fetchUserBlogs();
                                 } else {
                                   fetchUserBlogs();
                                 }
@@ -475,6 +517,13 @@ void didChangeAppLifecycleState(AppLifecycleState state) {
                       left: 0,
                       right: 0,
                       child: LinearProgressIndicator(color: colorBlack),
+                    ),
+                  if (isRefreshing)
+                    const Positioned(
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      child: LinearProgressIndicator(color: colorGrey),
                     ),
                 ],
               ),

@@ -26,6 +26,9 @@ class BlogCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final bool isOwner = currentUserId != null && blog.userId == currentUserId;
+    final bool isEdited = blog.updatedAt != null &&
+        (blog.createdAt == null ||
+            !blog.updatedAt!.isAtSameMomentAs(blog.createdAt!));
 
     const Color colorBlack = Color(0xFF1A1A1A);
     const Color colorGrey = Color(0xFF757575);
@@ -112,10 +115,36 @@ class BlogCard extends StatelessWidget {
               ],
             ),
             subtitle: blog.createdAt != null
-                ? Text(
-                    "${blog.createdAt!.day}/${blog.createdAt!.month}/${blog.createdAt!.year}",
-                    style: const TextStyle(color: colorGrey, fontSize: 11),
-                  )
+                ? (isEdited
+                    ? Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                            decoration: BoxDecoration(
+                              color: colorLightGrey,
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: const Text(
+                              "Edited",
+                              style: TextStyle(
+                                color: colorGrey,
+                                fontSize: 9,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            _formatDateTime(blog.updatedAt!),
+                            style: const TextStyle(color: colorGrey, fontSize: 11),
+                          ),
+                        ],
+                      )
+                    : Text(
+                        _formatDateTime(blog.createdAt!),
+                        style: const TextStyle(color: colorGrey, fontSize: 11),
+                      ))
                 : null,
             trailing: isOwner
                 ? PopupMenuButton<String>(
@@ -321,6 +350,13 @@ class BlogCard extends StatelessWidget {
     );
   }
 
+  String _formatDateTime(DateTime dt) {
+    final hour = dt.hour % 12 == 0 ? 12 : dt.hour % 12;
+    final minute = dt.minute.toString().padLeft(2, '0');
+    final suffix = dt.hour >= 12 ? 'PM' : 'AM';
+    return '${dt.day}/${dt.month}/${dt.year} $hour:$minute $suffix';
+  }
+
 }
 
 class _ActionButton extends StatelessWidget {
@@ -361,4 +397,5 @@ class _ActionButton extends StatelessWidget {
       ),
     );
   }
+
 }

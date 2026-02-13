@@ -32,7 +32,8 @@ Future<Blog> createBlog(
   List<String>? imageUrls,
 }) async {
   final resolvedImageUrls = imageUrls ?? const [];
-  final response = await Supabase.instance.client.from('blogs').insert({
+  final createdAtIso = DateTime.now().toIso8601String();
+  final payload = {
     'title': title,
     'content': content,
     'user_id': userId,
@@ -40,8 +41,31 @@ Future<Blog> createBlog(
     'image_url': resolvedImageUrls.isNotEmpty
         ? jsonEncode(resolvedImageUrls)
         : imageUrl,
-    'created_at': DateTime.now().toIso8601String(),
-  }).select().single();
+    'created_at': createdAtIso,
+  };
+  final payloadWithUpdatedAt = {
+    ...payload,
+    'updated_at': createdAtIso,
+  };
+
+  dynamic response;
+  try {
+    response = await Supabase.instance.client
+        .from('blogs')
+        .insert(payloadWithUpdatedAt)
+        .select()
+        .single();
+  } catch (e) {
+    if (_isMissingColumnError(e, 'updated_at', 'blogs')) {
+      response = await Supabase.instance.client
+          .from('blogs')
+          .insert(payload)
+          .select()
+          .single();
+    } else {
+      rethrow;
+    }
+  }
 
   return Blog.fromMap(response);
 }
@@ -55,6 +79,7 @@ Future<Blog> createBlog(
     List<String>? imageUrls,
   }) async {
     try {
+      final nowIso = DateTime.now().toIso8601String();
       final updates = <String, dynamic>{};
       if (title != null) updates['title'] = title;
       if (content != null) updates['content'] = content;
@@ -64,11 +89,27 @@ Future<Blog> createBlog(
         updates['image_url'] = imageUrl;
       }
       if (updates.isEmpty) return true;
+      final updatesWithTimestamp = {
+        ...updates,
+        'updated_at': nowIso,
+      };
 
-      await client
-          .from('blogs')
-          .update(updates)
-          .eq('id', id);
+      try {
+        await client
+            .from('blogs')
+            .update(updatesWithTimestamp)
+            .eq('id', id);
+      } catch (e) {
+        // Fallback for schemas that don't have blogs.updated_at yet.
+        if (_isMissingColumnError(e, 'updated_at', 'blogs')) {
+          await client
+              .from('blogs')
+              .update(updates)
+              .eq('id', id);
+        } else {
+          rethrow;
+        }
+      }
       return true;
     } catch (e) {
       print('Error updating blog: $e');
@@ -115,13 +156,36 @@ Future<Comment?> addComment(
     final user = client.auth.currentUser;
     if (user == null) throw Exception('Not authenticated');
 
-    final res = await client.from('comments').insert({
+    final createdAtIso = DateTime.now().toIso8601String();
+    final payload = {
       'blog_id': blogId,
       'user_id': user.id,
       'content': content,
       'image_url': imageUrl,
       'user_name': username,
-    }).select();
+      'created_at': createdAtIso,
+    };
+    final payloadWithUpdatedAt = {
+      ...payload,
+      'updated_at': createdAtIso,
+    };
+
+    dynamic res;
+    try {
+      res = await client
+          .from('comments')
+          .insert(payloadWithUpdatedAt)
+          .select();
+    } catch (e) {
+      if (_isMissingColumnError(e, 'updated_at', 'comments')) {
+        res = await client
+            .from('comments')
+            .insert(payload)
+            .select();
+      } else {
+        rethrow;
+      }
+    }
 
     return Comment.fromMap((res as List).first);
   } catch (e) {
@@ -131,10 +195,32 @@ Future<Comment?> addComment(
 }
   Future<bool> updateComment(int id, String content, String? imageUrl) async {
     try {
-      await client
-          .from('comments')
-          .update({'content': content, 'image_url': imageUrl})
-          .eq('id', id);
+      final nowIso = DateTime.now().toIso8601String();
+      final updates = <String, dynamic>{
+        'content': content,
+        'image_url': imageUrl,
+      };
+      final updatesWithTimestamp = {
+        ...updates,
+        'updated_at': nowIso,
+      };
+
+      try {
+        await client
+            .from('comments')
+            .update(updatesWithTimestamp)
+            .eq('id', id);
+      } catch (e) {
+        // Fallback for schemas that don't have comments.updated_at yet.
+        if (_isMissingColumnError(e, 'updated_at', 'comments')) {
+          await client
+              .from('comments')
+              .update(updates)
+              .eq('id', id);
+        } else {
+          rethrow;
+        }
+      }
       return true;
     } catch (e) {
       print('Error updating comment: $e');
@@ -315,6 +401,13 @@ Future<List<Blog>> getBlogsByUser(String userId) async {
       default:
         return 'application/octet-stream';
     }
+  }
+
+  bool _isMissingColumnError(Object error, String column, String table) {
+    final raw = error.toString().toLowerCase();
+    return raw.contains("'$column'") &&
+        raw.contains("'$table'") &&
+        raw.contains('schema cache');
   }
   
 }

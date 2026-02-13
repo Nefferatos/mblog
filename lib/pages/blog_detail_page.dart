@@ -464,6 +464,10 @@ class _BlogDetailPageState extends State<BlogDetailPage> {
   }
 
   Widget _buildAuthorHeader() {
+    final bool isEdited = widget.blog.updatedAt != null &&
+        (widget.blog.createdAt == null ||
+            !widget.blog.updatedAt!.isAtSameMomentAs(widget.blog.createdAt!));
+
     return Row(
       children: [
         CircleAvatar(
@@ -479,7 +483,39 @@ class _BlogDetailPageState extends State<BlogDetailPage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(widget.blog.username ?? "Anonymous", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-            const Text("Author", style: TextStyle(color: colorGrey, fontSize: 12)),
+            if (isEdited)
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                    decoration: BoxDecoration(
+                      color: colorDirtyWhite,
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: const Text(
+                      "Edited",
+                      style: TextStyle(
+                        color: colorGrey,
+                        fontSize: 9,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    _formatDateTime(widget.blog.updatedAt!),
+                    style: const TextStyle(color: colorGrey, fontSize: 12),
+                  ),
+                ],
+              )
+            else
+              Text(
+                widget.blog.createdAt != null
+                    ? _formatDateTime(widget.blog.createdAt!)
+                    : "Unknown date",
+                style: const TextStyle(color: colorGrey, fontSize: 12),
+              ),
           ],
         ),
       ],
@@ -765,6 +801,13 @@ class _BlogDetailPageState extends State<BlogDetailPage> {
       default:
         return 'application/octet-stream';
     }
+  }
+
+  String _formatDateTime(DateTime dt) {
+    final hour = dt.hour % 12 == 0 ? 12 : dt.hour % 12;
+    final minute = dt.minute.toString().padLeft(2, '0');
+    final suffix = dt.hour >= 12 ? 'PM' : 'AM';
+    return '${dt.day}/${dt.month}/${dt.year} $hour:$minute $suffix';
   }
 
   String? _toPublicBlogImageUrl(String? rawValue) {
