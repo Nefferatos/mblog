@@ -49,6 +49,28 @@ class _CommentTileState extends State<CommentTile> {
     return Supabase.instance.client.storage.from('blog-images').getPublicUrl(widget.comment.avatarUrl!);
   }
 
+  Future<bool> _confirmEditComment() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Save Changes"),
+        content: const Text("Do you want to update this comment?"),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text("Cancel"),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text("Update"),
+          ),
+        ],
+      ),
+    );
+    return confirmed == true;
+  }
+
   void _showEditDialog() {
     final controller = TextEditingController(text: widget.comment.content);
     final List<XFile> tempImages = [];
@@ -242,12 +264,15 @@ class _CommentTileState extends State<CommentTile> {
                     const SizedBox(width: 8),
                     IconButton(
                       icon: const Icon(Icons.send_rounded, color: colorBlack),
-                      onPressed: () {
+                      onPressed: () async {
+                        final confirmed = await _confirmEditComment();
+                        if (!confirmed) return;
                         widget.onUpdate(
                           controller.text,
                           tempImages.isNotEmpty ? tempImages : null,
                           editableExistingImages,
                         );
+                        if (!mounted) return;
                         Navigator.pop(context);
                       },
                     ),

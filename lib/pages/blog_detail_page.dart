@@ -32,12 +32,10 @@ class _BlogDetailPageState extends State<BlogDetailPage> {
   String? currentUserProfilePic; 
   final TextEditingController commentController = TextEditingController();
   final PageController _carouselController = PageController();
-  PageController? _viewerController;
   
   List<XFile> commentImages = [];
   List<Uint8List> commentWebImageBytes = [];
   bool commentLoading = false;
-  int? viewImageIndex;
   int _currentCarouselIndex = 0;
 
   static const Color colorBlack = Color(0xFF1A1A1A);
@@ -67,10 +65,10 @@ class _BlogDetailPageState extends State<BlogDetailPage> {
   @override
   void dispose() {
     _carouselController.dispose();
-    _viewerController?.dispose();
     commentController.dispose();
     super.dispose();
   }
+
 
   Future<void> loadUser() async {
     final user = Supabase.instance.client.auth.currentUser;
@@ -214,6 +212,7 @@ class _BlogDetailPageState extends State<BlogDetailPage> {
         }
         finalImagePaths = [...finalImagePaths, ...uploadedPaths];
       } else if (existingComment != null && newImages != null && newImages.isEmpty) {
+
         finalImagePaths = [];
       }
 
@@ -312,6 +311,7 @@ class _BlogDetailPageState extends State<BlogDetailPage> {
     } catch (e) { debugPrint("Delete error: $e"); }
   }
 
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -319,49 +319,41 @@ class _BlogDetailPageState extends State<BlogDetailPage> {
       bottomNavigationBar: _buildCommentInputArea(),
       body: loading
           ? const Center(child: CircularProgressIndicator(color: colorBlack))
-          : Stack(
-              children: [
-                CustomScrollView(
-                  slivers: [
-                    _buildSliverCarousel(),
-                    SliverToBoxAdapter(
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
+          : CustomScrollView(
+              slivers: [
+                _buildSliverCarousel(),
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        if (_blogImages.length > 1) _buildThumbnailRow(),
+                        const SizedBox(height: 24),
+                        _buildAuthorHeader(),
+                        const SizedBox(height: 24),
+                        Text(
+                          widget.blog.title,
+                          style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w900, color: colorBlack, height: 1.1),
+                        ),
+                        const SizedBox(height: 20),
+                        Text(
+                          widget.blog.content,
+                          style: const TextStyle(fontSize: 17, height: 1.7, color: Color(0xFF2D2D2D)),
+                        ),
+                        const SizedBox(height: 48),
+                        const Row(
                           children: [
-                            if (_blogImages.length > 1) _buildThumbnailRow(),
-                            const SizedBox(height: 24),
-
-                            _buildAuthorHeader(),
-                            const SizedBox(height: 24),
-
-                            Text(
-                              widget.blog.title,
-                              style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w900, color: colorBlack, height: 1.1),
-                            ),
-                            const SizedBox(height: 20),
-
-                            Text(
-                              widget.blog.content,
-                              style: const TextStyle(fontSize: 17, height: 1.7, color: Color(0xFF2D2D2D)),
-                            ),
-                            const SizedBox(height: 48),
-
-                            const Row(
-                              children: [
-                                Text("COMMENTS", style: TextStyle(fontWeight: FontWeight.w900, fontSize: 13, letterSpacing: 2)),
-                                Expanded(child: Divider(indent: 16, color: colorDirtyWhite)),
-                              ],
-                            ),
-                            const SizedBox(height: 24),
-                            _buildCommentsList(),
-                            const SizedBox(height: 120), 
+                            Text("COMMENTS", style: TextStyle(fontWeight: FontWeight.w900, fontSize: 13, letterSpacing: 2)),
+                            Expanded(child: Divider(indent: 16, color: colorDirtyWhite)),
                           ],
                         ),
-                      ),
+                        const SizedBox(height: 24),
+                        _buildCommentsList(),
+                        const SizedBox(height: 120), 
+                      ],
                     ),
-                  ],
+                  ),
                 ),
               ],
             ),
@@ -425,7 +417,7 @@ class _BlogDetailPageState extends State<BlogDetailPage> {
                       borderRadius: BorderRadius.circular(20),
                     ),
                     child: Text(
-                      "View all (${_currentCarouselIndex + 1}/${_blogImages.length})",
+                      "${_currentCarouselIndex + 1}/${_blogImages.length}",
                       style: const TextStyle(
                         color: Colors.white,
                         fontSize: 12,
@@ -562,27 +554,24 @@ class _BlogDetailPageState extends State<BlogDetailPage> {
 
   Future<void> _openImageViewer(int initialIndex) async {
     if (_blogImages.isEmpty) return;
-    _viewerController?.dispose();
-    _viewerController = PageController(initialPage: initialIndex);
-    setState(() => viewImageIndex = initialIndex);
-    await showDialog<void>(
+    final safeInitialIndex = initialIndex.clamp(0, _blogImages.length - 1);
+    final selectedIndex = await showDialog<int>(
       context: context,
       barrierColor: Colors.black,
       barrierDismissible: true,
       useRootNavigator: true,
-      builder: (_) => Dialog.fullscreen(
-        backgroundColor: Colors.transparent,
-        child: _buildFullscreenViewer(),
+      builder: (_) => _FullscreenBlogImageViewer(
+        imageUrls: _blogImages,
+        initialIndex: safeInitialIndex,
       ),
     );
     if (!mounted) return;
-    _viewerController?.dispose();
-    _viewerController = null;
-    setState(() => viewImageIndex = null);
-  }
-
-  void _closeImageViewer() {
-    Navigator.of(context, rootNavigator: true).pop();
+    final syncedIndex =
+        (selectedIndex ?? _currentCarouselIndex).clamp(0, _blogImages.length - 1);
+    if (_carouselController.hasClients) {
+      _carouselController.jumpToPage(syncedIndex);
+    }
+    setState(() => _currentCarouselIndex = syncedIndex);
   }
 
   Widget _buildCommentsList() {
@@ -710,137 +699,6 @@ class _BlogDetailPageState extends State<BlogDetailPage> {
             ],
           );
         },
-      ),
-    );
-  }
-
-  Widget _buildFullscreenViewer() {
-    final controller = _viewerController ?? PageController(initialPage: viewImageIndex ?? 0);
-    _viewerController ??= controller;
-    final topInset = MediaQuery.of(context).padding.top;
-    return Container(
-      color: Colors.black,
-      child: Stack(
-          children: [
-            PageView.builder(
-              controller: controller,
-              onPageChanged: (index) => setState(() => viewImageIndex = index),
-              itemCount: _blogImages.length,
-              itemBuilder: (context, index) => InteractiveViewer(
-                child: Center(
-                  child: Image.network(
-                    _blogImages[index],
-                    errorBuilder: (context, error, stackTrace) => const Center(
-                      child: Icon(Icons.broken_image, color: Colors.white70, size: 40),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-            Positioned(
-              top: topInset + 10,
-              left: 14,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                decoration: BoxDecoration(
-                  color: Colors.black54,
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                child: Text(
-                  "${(viewImageIndex ?? 0) + 1}/${_blogImages.length}",
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              ),
-            ),
-            Positioned(
-              top: topInset + 8,
-              right: 8,
-              child: IconButton(
-                onPressed: _closeImageViewer,
-                icon: const Icon(Icons.close, color: Colors.white),
-              ),
-            ),
-            if (_blogImages.length > 1)
-              Positioned(
-                left: 10,
-                top: 0,
-                bottom: 0,
-                child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: _navButton(Icons.arrow_back_ios_new, () {
-                    controller.previousPage(
-                      duration: const Duration(milliseconds: 250),
-                      curve: Curves.easeInOut,
-                    );
-                  }),
-                ),
-              ),
-            if (_blogImages.length > 1)
-              Positioned(
-                right: 10,
-                top: 0,
-                bottom: 0,
-                child: Align(
-                  alignment: Alignment.centerRight,
-                  child: _navButton(Icons.arrow_forward_ios, () {
-                    controller.nextPage(
-                      duration: const Duration(milliseconds: 250),
-                      curve: Curves.easeInOut,
-                    );
-                  }),
-                ),
-              ),
-            if (_blogImages.length > 1)
-              Positioned(
-                left: 0,
-                right: 0,
-                bottom: 18,
-                child: SizedBox(
-                  height: 72,
-                  child: ListView.builder(
-                    scrollDirection: Axis.horizontal,
-                    padding: const EdgeInsets.symmetric(horizontal: 14),
-                    itemCount: _blogImages.length,
-                    itemBuilder: (context, index) {
-                      final selected = index == (viewImageIndex ?? 0);
-                      return GestureDetector(
-                        onTap: () {
-                          controller.animateToPage(
-                            index,
-                            duration: const Duration(milliseconds: 250),
-                            curve: Curves.easeInOut,
-                          );
-                          setState(() => viewImageIndex = index);
-                        },
-                        child: Container(
-                          margin: const EdgeInsets.only(right: 10),
-                          width: 64,
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(10),
-                            border: Border.all(
-                              color: selected ? Colors.white : Colors.white24,
-                              width: selected ? 2 : 1,
-                            ),
-                          ),
-                          child: ClipRRect(
-                            borderRadius: BorderRadius.circular(9),
-                            child: Image.network(
-                              _blogImages[index],
-                              fit: BoxFit.cover,
-                              errorBuilder: (context, error, stackTrace) =>
-                                  Container(color: Colors.white10),
-                            ),
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-                ),
-              ),
-          ],
       ),
     );
   }
@@ -983,10 +841,200 @@ class _BlogDetailPageState extends State<BlogDetailPage> {
     return '${dt.day}/${dt.month}/${dt.year} $hour:$minute $suffix';
   }
 
-  String? _toPublicBlogImageUrl(String? rawValue) {
+String? _toPublicBlogImageUrl(String? rawValue) {
     if (rawValue == null || rawValue.isEmpty) return null;
     if (rawValue.startsWith('http')) return rawValue;
     return Supabase.instance.client.storage.from('blog-images').getPublicUrl(rawValue);
   }
 
+}
+
+class _FullscreenBlogImageViewer extends StatefulWidget {
+  final List<String> imageUrls;
+  final int initialIndex;
+
+  const _FullscreenBlogImageViewer({
+    required this.imageUrls,
+    required this.initialIndex,
+  });
+
+  @override
+  State<_FullscreenBlogImageViewer> createState() =>
+      _FullscreenBlogImageViewerState();
+}
+
+class _FullscreenBlogImageViewerState extends State<_FullscreenBlogImageViewer> {
+  late final PageController _pageController;
+  late final ValueNotifier<int> _currentIndex;
+
+  @override
+  void initState() {
+    super.initState();
+    _pageController = PageController(initialPage: widget.initialIndex);
+    _currentIndex = ValueNotifier<int>(widget.initialIndex);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _precacheAround(widget.initialIndex);
+    });
+  }
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    _currentIndex.dispose();
+    super.dispose();
+  }
+
+  void _precacheAround(int index) {
+    final start = (index - 1).clamp(0, widget.imageUrls.length - 1);
+    final end = (index + 1).clamp(0, widget.imageUrls.length - 1);
+    for (var i = start; i <= end; i++) {
+      precacheImage(NetworkImage(widget.imageUrls[i]), context);
+    }
+  }
+
+  void _goTo(int index) {
+    if (index < 0 || index >= widget.imageUrls.length) return;
+    _pageController.animateToPage(
+      index,
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOutCubic,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final topInset = MediaQuery.of(context).padding.top;
+    return Dialog.fullscreen(
+      backgroundColor: Colors.transparent,
+      child: Container(
+        color: Colors.black,
+        child: Stack(
+          children: [
+            PageView.builder(
+              controller: _pageController,
+              onPageChanged: (index) {
+                _currentIndex.value = index;
+                _precacheAround(index);
+              },
+              itemCount: widget.imageUrls.length,
+              itemBuilder: (context, index) => InteractiveViewer(
+                child: Center(
+                  child: Image.network(
+                    widget.imageUrls[index],
+                    fit: BoxFit.contain,
+                    filterQuality: FilterQuality.low,
+                    gaplessPlayback: true,
+                    errorBuilder: (context, error, stackTrace) => const Center(
+                      child: Icon(
+                        Icons.broken_image,
+                        color: Colors.white70,
+                        size: 40,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            Positioned(
+              top: topInset + 8,
+              right: 8,
+              child: IconButton(
+                onPressed: () => Navigator.pop(context, _currentIndex.value),
+                icon: const Icon(Icons.close, color: Colors.white),
+              ),
+            ),
+            if (widget.imageUrls.length > 1)
+              ValueListenableBuilder<int>(
+                valueListenable: _currentIndex,
+                builder: (context, currentIndex, _) => Positioned(
+                  left: 10,
+                  top: 0,
+                  bottom: 0,
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: _viewerNavButton(
+                      Icons.arrow_back_ios_new,
+                      () => _goTo(currentIndex - 1),
+                    ),
+                  ),
+                ),
+              ),
+            if (widget.imageUrls.length > 1)
+              ValueListenableBuilder<int>(
+                valueListenable: _currentIndex,
+                builder: (context, currentIndex, _) => Positioned(
+                  right: 10,
+                  top: 0,
+                  bottom: 0,
+                  child: Align(
+                    alignment: Alignment.centerRight,
+                    child: _viewerNavButton(
+                      Icons.arrow_forward_ios,
+                      () => _goTo(currentIndex + 1),
+                    ),
+                  ),
+                ),
+              ),
+            if (widget.imageUrls.length > 1)
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 18,
+                child: SizedBox(
+                  height: 72,
+                  child: ValueListenableBuilder<int>(
+                    valueListenable: _currentIndex,
+                    builder: (context, currentIndex, _) => ListView.builder(
+                      scrollDirection: Axis.horizontal,
+                      padding: const EdgeInsets.symmetric(horizontal: 14),
+                      itemCount: widget.imageUrls.length,
+                      itemBuilder: (context, index) {
+                        final selected = index == currentIndex;
+                        return GestureDetector(
+                          onTap: () => _goTo(index),
+                          child: Container(
+                            margin: const EdgeInsets.only(right: 10),
+                            width: 64,
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(
+                                color: selected ? Colors.white : Colors.white24,
+                                width: selected ? 2 : 1,
+                              ),
+                            ),
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(9),
+                              child: Image.network(
+                                widget.imageUrls[index],
+                                fit: BoxFit.cover,
+                                cacheWidth: 160,
+                                filterQuality: FilterQuality.low,
+                                errorBuilder: (context, error, stackTrace) =>
+                                    Container(color: Colors.white10),
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _viewerNavButton(IconData icon, VoidCallback onTap) {
+    return GestureDetector(
+      onTap: onTap,
+      child: CircleAvatar(
+        radius: 20,
+        backgroundColor: Colors.black26,
+        child: Icon(icon, color: Colors.white, size: 16),
+      ),
+    );
+  }
 }
