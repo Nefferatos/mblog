@@ -5,6 +5,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
+import 'dart:ui';
 import '../models/blog.dart';
 import '../models/comment.dart';
 import '../services/supabase_service.dart';
@@ -557,7 +558,7 @@ class _BlogDetailPageState extends State<BlogDetailPage> {
     final safeInitialIndex = initialIndex.clamp(0, _blogImages.length - 1);
     final selectedIndex = await showDialog<int>(
       context: context,
-      barrierColor: Colors.black,
+      barrierColor: Colors.transparent,
       barrierDismissible: true,
       useRootNavigator: true,
       builder: (_) => _FullscreenBlogImageViewer(
@@ -864,13 +865,15 @@ class _FullscreenBlogImageViewer extends StatefulWidget {
 }
 
 class _FullscreenBlogImageViewerState extends State<_FullscreenBlogImageViewer> {
-  late final PageController _pageController;
+  late final ScrollController _scrollController;
   late final ValueNotifier<int> _currentIndex;
+  double _itemExtent = 1;
+  bool _didJumpInitial = false;
 
   @override
   void initState() {
     super.initState();
-    _pageController = PageController(initialPage: widget.initialIndex);
+    _scrollController = ScrollController();
     _currentIndex = ValueNotifier<int>(widget.initialIndex);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
@@ -880,7 +883,7 @@ class _FullscreenBlogImageViewerState extends State<_FullscreenBlogImageViewer> 
 
   @override
   void dispose() {
-    _pageController.dispose();
+    _scrollController.dispose();
     _currentIndex.dispose();
     super.dispose();
   }
@@ -893,147 +896,147 @@ class _FullscreenBlogImageViewerState extends State<_FullscreenBlogImageViewer> 
     }
   }
 
-  void _goTo(int index) {
-    if (index < 0 || index >= widget.imageUrls.length) return;
-    _pageController.animateToPage(
-      index,
-      duration: const Duration(milliseconds: 220),
-      curve: Curves.easeOutCubic,
-    );
+  void _updateCurrentIndexFromOffset() {
+    if (!_scrollController.hasClients) return;
+    final raw = (_scrollController.offset / _itemExtent).round();
+    final next = raw.clamp(0, widget.imageUrls.length - 1);
+    if (_currentIndex.value != next) {
+      _currentIndex.value = next;
+      _precacheAround(next);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final topInset = MediaQuery.of(context).padding.top;
-    return Dialog.fullscreen(
-      backgroundColor: Colors.transparent,
-      child: Container(
-        color: Colors.black,
-        child: Stack(
-          children: [
-            PageView.builder(
-              controller: _pageController,
-              onPageChanged: (index) {
-                _currentIndex.value = index;
-                _precacheAround(index);
-              },
-              itemCount: widget.imageUrls.length,
-              itemBuilder: (context, index) => InteractiveViewer(
-                child: Center(
-                  child: Image.network(
-                    widget.imageUrls[index],
-                    fit: BoxFit.contain,
-                    filterQuality: FilterQuality.low,
-                    gaplessPlayback: true,
-                    errorBuilder: (context, error, stackTrace) => const Center(
-                      child: Icon(
-                        Icons.broken_image,
-                        color: Colors.white70,
-                        size: 40,
-                      ),
-                    ),
-                  ),
-                ),
+    return Material(
+      type: MaterialType.transparency,
+      child: Stack(
+        children: [
+          Positioned.fill(
+            child: GestureDetector(
+              onTap: () => Navigator.pop(context, _currentIndex.value),
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                child: Container(color: Colors.black.withValues(alpha: 0.30)),
               ),
             ),
-            Positioned(
-              top: topInset + 8,
-              right: 8,
-              child: IconButton(
-                onPressed: () => Navigator.pop(context, _currentIndex.value),
-                icon: const Icon(Icons.close, color: Colors.white),
-              ),
-            ),
-            if (widget.imageUrls.length > 1)
-              ValueListenableBuilder<int>(
-                valueListenable: _currentIndex,
-                builder: (context, currentIndex, _) => Positioned(
-                  left: 10,
-                  top: 0,
-                  bottom: 0,
-                  child: Align(
-                    alignment: Alignment.centerLeft,
-                    child: _viewerNavButton(
-                      Icons.arrow_back_ios_new,
-                      () => _goTo(currentIndex - 1),
-                    ),
-                  ),
-                ),
-              ),
-            if (widget.imageUrls.length > 1)
-              ValueListenableBuilder<int>(
-                valueListenable: _currentIndex,
-                builder: (context, currentIndex, _) => Positioned(
-                  right: 10,
-                  top: 0,
-                  bottom: 0,
-                  child: Align(
-                    alignment: Alignment.centerRight,
-                    child: _viewerNavButton(
-                      Icons.arrow_forward_ios,
-                      () => _goTo(currentIndex + 1),
-                    ),
-                  ),
-                ),
-              ),
-            if (widget.imageUrls.length > 1)
-              Positioned(
-                left: 0,
-                right: 0,
-                bottom: 18,
-                child: SizedBox(
-                  height: 72,
-                  child: ValueListenableBuilder<int>(
-                    valueListenable: _currentIndex,
-                    builder: (context, currentIndex, _) => ListView.builder(
-                      scrollDirection: Axis.horizontal,
-                      padding: const EdgeInsets.symmetric(horizontal: 14),
-                      itemCount: widget.imageUrls.length,
-                      itemBuilder: (context, index) {
-                        final selected = index == currentIndex;
-                        return GestureDetector(
-                          onTap: () => _goTo(index),
-                          child: Container(
-                            margin: const EdgeInsets.only(right: 10),
-                            width: 64,
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(10),
-                              border: Border.all(
-                                color: selected ? Colors.white : Colors.white24,
-                                width: selected ? 2 : 1,
-                              ),
-                            ),
-                            child: ClipRRect(
-                              borderRadius: BorderRadius.circular(9),
-                              child: Image.network(
-                                widget.imageUrls[index],
-                                fit: BoxFit.cover,
-                                cacheWidth: 160,
-                                filterQuality: FilterQuality.low,
-                                errorBuilder: (context, error, stackTrace) =>
-                                    Container(color: Colors.white10),
+          ),
+          SafeArea(
+            child: Center(
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final modalWidth = constraints.maxWidth * 0.92;
+                  final modalHeight = constraints.maxHeight * 0.82;
+                  final imageHeight = (modalWidth - 24) * 0.82;
+                  final itemSpacing = 10.0;
+                  _itemExtent = imageHeight + itemSpacing;
+
+                  if (!_didJumpInitial) {
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      if (!mounted || !_scrollController.hasClients) return;
+                      final target = (widget.initialIndex * _itemExtent)
+                          .clamp(0, _scrollController.position.maxScrollExtent)
+                          .toDouble();
+                      _scrollController.jumpTo(target);
+                      _didJumpInitial = true;
+                      _updateCurrentIndexFromOffset();
+                    });
+                  }
+
+                  return ClipRRect(
+                    borderRadius: BorderRadius.circular(20),
+                    child: Container(
+                      width: modalWidth,
+                      height: modalHeight,
+                      color: Colors.black.withValues(alpha: 0.92),
+                      child: Stack(
+                        children: [
+                          NotificationListener<ScrollUpdateNotification>(
+                            onNotification: (notification) {
+                              _updateCurrentIndexFromOffset();
+                              return false;
+                            },
+                            child: ListView.builder(
+                              controller: _scrollController,
+                              physics: const BouncingScrollPhysics(),
+                              padding: const EdgeInsets.fromLTRB(12, 54, 12, 12),
+                              itemCount: widget.imageUrls.length,
+                              itemBuilder: (context, index) => Padding(
+                                padding: EdgeInsets.only(
+                                  bottom: index == widget.imageUrls.length - 1
+                                      ? 0
+                                      : itemSpacing,
+                                ),
+                                child: SizedBox(
+                                  height: imageHeight,
+                                  child: ClipRRect(
+                                    borderRadius: BorderRadius.circular(12),
+                                    child: Container(
+                                      color: Colors.black,
+                                      child: Image.network(
+                                        widget.imageUrls[index],
+                                        fit: BoxFit.cover,
+                                        filterQuality: FilterQuality.low,
+                                        gaplessPlayback: true,
+                                        errorBuilder:
+                                            (context, error, stackTrace) =>
+                                                const Center(
+                                          child: Icon(
+                                            Icons.broken_image,
+                                            color: Colors.white70,
+                                            size: 40,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
                               ),
                             ),
                           ),
-                        );
-                      },
+                          Positioned(
+                            top: 8,
+                            right: 8,
+                            child: IconButton(
+                              onPressed: () =>
+                                  Navigator.pop(context, _currentIndex.value),
+                              icon: const Icon(Icons.close, color: Colors.white),
+                            ),
+                          ),
+                          Positioned(
+                            top: 14,
+                            left: 14,
+                            child: ValueListenableBuilder<int>(
+                              valueListenable: _currentIndex,
+                              builder: (context, currentIndex, _) => Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 10,
+                                  vertical: 6,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: Colors.black45,
+                                  borderRadius: BorderRadius.circular(14),
+                                ),
+                                child: Text(
+                                  "${currentIndex + 1}/${widget.imageUrls.length}",
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.w700,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
-                  ),
-                ),
+                  );
+                },
               ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _viewerNavButton(IconData icon, VoidCallback onTap) {
-    return GestureDetector(
-      onTap: onTap,
-      child: CircleAvatar(
-        radius: 20,
-        backgroundColor: Colors.black26,
-        child: Icon(icon, color: Colors.white, size: 16),
+            ),
+          ),
+        ],
       ),
     );
   }
